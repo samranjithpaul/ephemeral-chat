@@ -21,6 +21,7 @@ export const roomSchema = z.object({
   users: z.array(z.string()), // Array of usernames
   maxUsers: z.number().default(35),
   createdAt: z.number(), // Unix timestamp
+  messages: z.array(messageSchema).optional(), // Messages stored in room
 });
 
 export const insertRoomSchema = roomSchema.omit({ id: true, users: true, createdAt: true });
@@ -28,14 +29,17 @@ export const insertRoomSchema = roomSchema.omit({ id: true, users: true, created
 export type Room = z.infer<typeof roomSchema>;
 export type InsertRoom = z.infer<typeof insertRoomSchema>;
 
-// Message Schema
+// Message Schema - WhatsApp-like with status tracking
 export const messageSchema = z.object({
   id: z.string(),
   roomId: z.string(),
   username: z.string(),
   content: z.string().min(1).max(5000),
   timestamp: z.number(),
-  type: z.enum(["text", "system", "file"]).default("text"),
+  type: z.enum(["text", "system", "audio"]).default("text"),
+  audioData: z.string().optional(), // Base64 encoded audio for audio messages
+  status: z.enum(["sending", "sent", "delivered"]).optional(), // WhatsApp-like message status
+  tempId: z.string().optional(), // For optimistic updates tracking
 });
 
 export const insertMessageSchema = messageSchema.omit({ id: true, timestamp: true });

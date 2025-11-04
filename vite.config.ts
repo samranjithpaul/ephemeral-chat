@@ -32,9 +32,24 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    watch: {
+      usePolling: false,
+      ignored: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
+    },
+    hmr: {
+      overlay: true, // Keep error overlay but reduce full page reloads
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],
+    },
+    proxy: {
+      // Proxy all /api requests to the Express backend
+      "/api": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
 });
