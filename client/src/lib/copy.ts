@@ -23,8 +23,15 @@ export const COPY = {
     TITLE: "About Ephemeral Chat",
     SUBTITLE: "A privacy-first messaging platform designed for secure, temporary communication with zero data retention",
     MISSION_TITLE: "Our Mission",
-    MISSION_PARAGRAPH: "In an era where digital privacy is increasingly rare, Ephemeral Chat provides a solution for truly private conversations. We believe that not all communication needs to be permanent, and that privacy should be the default, not an afterthought. All data auto-deletes after 1 hour, and we maintain no chat history or user tracking.",
+    MISSION_PARAGRAPH: "Ephemeral Chat is a secure, privacy-first messaging platform built for temporary, anonymous conversations. No data is stored — everything disappears automatically after 1 hour.",
     FOOTER: "Built with privacy in mind • All data auto-deletes after 1 hour",
+    DEVELOPER_SECTION: {
+      TITLE: "About the Developer",
+      NAME: "Sam Ranjith Paul",
+      GITHUB: "https://github.com/samranjithpaul",
+      LINKEDIN: "https://www.linkedin.com/in/Samranjithpaul/",
+      EMAIL: "samranjithpaul71@gmail.com",
+    },
   },
 
   // Help Page
@@ -33,12 +40,16 @@ export const COPY = {
     SUBTITLE: "Learn how to use Ephemeral Chat for secure, private messaging",
     FAQ: {
       HOW_LONG_STORED: {
-        QUESTION: "How long is chat stored?",
-        ANSWER: "All data (messages, rooms, files) automatically expires after 1 hour. When you close your browser or log out, all your data is immediately deleted from our servers.",
+        QUESTION: "How long are chats stored?",
+        ANSWER: "Chats automatically delete after 1 hour.",
       },
       CAN_OTHERS_SEE_HISTORY: {
-        QUESTION: "Can others see my history?",
-        ANSWER: "No. We maintain no chat history or user tracking. All data auto-deletes after 1 hour, and there is no way to retrieve past conversations.",
+        QUESTION: "Is my data tracked?",
+        ANSWER: "No. Ephemeral Chat does not collect chat history or user analytics.",
+      },
+      WHO_DEVELOPED: {
+        QUESTION: "Who developed this app?",
+        ANSWER: "This app was developed by Sam Ranjith Paul.",
       },
       HOW_CREATE_ROOM: {
         QUESTION: "How to create a room?",
@@ -54,6 +65,15 @@ export const COPY = {
     CODE_AVAILABLE: "Room code available.",
     CODE_UNAVAILABLE: "Room code is already taken",
     CODE_CHECKING: "Checking availability...",
+  },
+
+  // Developer Attribution
+  DEVELOPER: {
+    NAME: "Sam Ranjith Paul",
+    GITHUB: "https://github.com/samranjithpaul",
+    LINKEDIN: "https://www.linkedin.com/in/Samranjithpaul/",
+    EMAIL: "samranjithpaul71@gmail.com",
+    FOOTER_TEXT: "© 2025 Ephemeral Chat · Built by Sam Ranjith Paul",
   },
 } as const;
 

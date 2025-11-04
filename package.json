@@ -1,6 +1,12 @@
 {
-  "name": "rest-express",
+  "name": "ephemeral-chat",
   "version": "1.0.0",
+  "description": "Ephemeral Chat - A secure, privacy-first messaging platform with temporary rooms, real-time messaging, and auto-deletion. No accounts, no history, no tracking.",
+  "author": {
+    "name": "Sam Ranjith Paul",
+    "email": "samranjithpaul71@gmail.com",
+    "url": "https://github.com/samranjithpaul"
+  },
   "type": "module",
   "license": "MIT",
   "scripts": {

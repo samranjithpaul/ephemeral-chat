@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { ArrowLeft, Shield, Clock, Lock, Trash2 } from "lucide-react";
+import { ArrowLeft, Shield, Clock, Lock, Trash2, Github, Linkedin, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -37,10 +37,10 @@ export default function About() {
         <div className="space-y-4 sm:space-y-6 mb-8 sm:mb-12">
           <Card>
             <CardHeader className="px-4 sm:px-6 pt-4 sm:pt-6 pb-3 sm:pb-4">
-              <CardTitle className="text-lg sm:text-xl">Our Mission</CardTitle>
+              <CardTitle className="text-lg sm:text-xl text-center sm:text-left">Our Mission</CardTitle>
             </CardHeader>
             <CardContent className="px-4 sm:px-6 pb-4 sm:pb-6">
-              <p className="text-sm sm:text-base text-muted-foreground whitespace-normal">
+              <p className="text-sm sm:text-base text-muted-foreground whitespace-normal text-center sm:text-left">
                 {COPY.ABOUT.MISSION_PARAGRAPH}
               </p>
             </CardContent>
@@ -182,9 +182,49 @@ export default function About() {
           </CardContent>
         </Card>
 
+        <Card className="mt-8 sm:mt-12">
+          <CardHeader className="px-4 sm:px-6 pt-4 sm:pt-6 pb-3 sm:pb-4">
+            <CardTitle className="text-lg sm:text-xl text-center">{COPY.ABOUT.DEVELOPER_SECTION.TITLE}</CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 sm:px-6 pb-4 sm:pb-6">
+            <div className="text-center space-y-4">
+              <p className="text-sm sm:text-base font-semibold text-foreground">{COPY.ABOUT.DEVELOPER_SECTION.NAME}</p>
+              <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6 text-xs sm:text-sm">
+                <a
+                  href={COPY.ABOUT.DEVELOPER_SECTION.GITHUB}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Github className="h-4 w-4" />
+                  <span>GitHub</span>
+                </a>
+                <a
+                  href={COPY.ABOUT.DEVELOPER_SECTION.LINKEDIN}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Linkedin className="h-4 w-4" />
+                  <span>LinkedIn</span>
+                </a>
+                <a
+                  href={`mailto:${COPY.ABOUT.DEVELOPER_SECTION.EMAIL}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Mail className="h-4 w-4" />
+                  <span>Email</span>
+                </a>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="mt-8 sm:mt-12 text-center text-xs sm:text-sm text-muted-foreground px-4">
           <p className="whitespace-normal">{COPY.ABOUT.FOOTER}</p>
-          <p className="mt-2 break-words">For questions or support, please contact: support@ephemeralchat.example</p>
+          <p className="mt-2 whitespace-normal">{COPY.DEVELOPER.FOOTER_TEXT}</p>
         </div>
       </main>
     </div>

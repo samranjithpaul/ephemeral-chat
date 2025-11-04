@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { ArrowLeft, Shield, Users, MessageSquare, FileUp, Clock, Shuffle } from "lucide-react";
+import { ArrowLeft, Shield, Users, MessageSquare, FileUp, Clock, Shuffle, Github, Linkedin, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -21,7 +21,7 @@ export default function Help() {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-8 md:py-12">
+      <main className="max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-8 md:py-12 text-center sm:text-left">
         <div className="text-center mb-8 sm:mb-12">
           <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold mb-3 sm:mb-4">{COPY.HELP.TITLE}</h1>
           <p className="text-sm sm:text-base md:text-lg text-muted-foreground whitespace-normal">
@@ -51,6 +51,12 @@ export default function Help() {
                 <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">{COPY.HELP.FAQ.CAN_OTHERS_SEE_HISTORY.QUESTION}</h4>
                 <p className="text-xs sm:text-sm text-muted-foreground whitespace-normal">
                   {COPY.HELP.FAQ.CAN_OTHERS_SEE_HISTORY.ANSWER}
+                </p>
+              </div>
+              <div>
+                <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">{COPY.HELP.FAQ.WHO_DEVELOPED.QUESTION}</h4>
+                <p className="text-xs sm:text-sm text-muted-foreground whitespace-normal">
+                  {COPY.HELP.FAQ.WHO_DEVELOPED.ANSWER}
                 </p>
               </div>
               <div>
@@ -177,6 +183,57 @@ export default function Help() {
                 <p className="text-xs sm:text-sm text-muted-foreground">
                   Closing your browser tab or refreshing the page will delete your session and remove you from all rooms.
                 </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Developer Attribution Footer */}
+        <div className="mt-8 sm:mt-12 pt-6 sm:pt-8 border-t">
+          <Card>
+            <CardContent className="px-4 sm:px-6 py-4 sm:py-6">
+              <div className="text-center space-y-4">
+                <p className="text-xs sm:text-sm text-muted-foreground">
+                  Built by{" "}
+                  <a
+                    href={COPY.DEVELOPER.GITHUB}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline font-medium"
+                  >
+                    {COPY.DEVELOPER.NAME}
+                  </a>
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6 text-xs sm:text-sm">
+                  <a
+                    href={COPY.DEVELOPER.GITHUB}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Github className="h-4 w-4" />
+                    <span>GitHub</span>
+                  </a>
+                  <a
+                    href={COPY.DEVELOPER.LINKEDIN}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Linkedin className="h-4 w-4" />
+                    <span>LinkedIn</span>
+                  </a>
+                  <a
+                    href={`mailto:${COPY.DEVELOPER.EMAIL}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Mail className="h-4 w-4" />
+                    <span>Email</span>
+                  </a>
+                </div>
+                <p className="text-xs text-muted-foreground mt-4">{COPY.DEVELOPER.FOOTER_TEXT}</p>
               </div>
             </CardContent>
           </Card>

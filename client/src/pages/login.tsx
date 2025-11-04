@@ -167,6 +167,7 @@ export default function Login() {
 
       <div className="absolute bottom-2 sm:bottom-4 left-0 right-0 text-center text-xs sm:text-sm text-muted-foreground px-4">
         <p>{COPY.LOGIN.FOOTER}</p>
+        <p className="mt-1">{COPY.DEVELOPER.FOOTER_TEXT}</p>
       </div>
     </div>
   );
