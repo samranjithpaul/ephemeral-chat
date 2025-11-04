@@ -3,6 +3,7 @@ import { ArrowLeft, Shield, Clock, Lock, Trash2, Github, Linkedin, Mail } from "
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { Logo } from "@/components/logo";
 import { COPY } from "@/lib/copy";
 
 export default function About() {
@@ -24,8 +25,8 @@ export default function About() {
       <main className="max-w-4xl mx-auto px-3 sm:px-4 py-6 sm:py-8 md:py-12">
         <div className="text-center mb-8 sm:mb-12">
           <div className="flex justify-center mb-4 sm:mb-6">
-            <div className="rounded-full bg-primary/10 p-4 sm:p-6">
-              <Shield className="h-12 w-12 sm:h-16 sm:w-16 text-primary" />
+            <div className="rounded-full bg-primary/10 p-3 sm:p-4">
+              <Logo size="lg" showText={false} className="pointer-events-none animate-pulse" />
             </div>
           </div>
           <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold mb-3 sm:mb-4">{COPY.ABOUT.TITLE}</h1>
