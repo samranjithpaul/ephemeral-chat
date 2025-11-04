@@ -609,7 +609,7 @@ export default function RoomPage() {
     soundManager.playClick();
     toast({
       title: "Room code copied!",
-      description: `Room code "${roomId}" copied to clipboard. Share it with others to invite them!`,
+      description: `Room code "${roomId}" copied to clipboard. Share it with others so they can join this room.`,
     });
     setTimeout(() => setCopied(false), 2000);
   };

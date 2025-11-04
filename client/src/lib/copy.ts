@@ -53,7 +53,7 @@ export const COPY = {
       },
       HOW_CREATE_ROOM: {
         QUESTION: "How to create a room?",
-        ANSWER: "From the dashboard, enter a room name and click 'Create Room'. You'll receive a unique room code to share with others. You can also create a custom room code if you prefer.",
+        ANSWER: "From the dashboard, enter a room name and click 'Create Room'. You'll receive a unique room code. Share the code with others so they can join. You can also create a custom room code if you prefer.",
       },
     },
   },

@@ -35,11 +35,11 @@ export default function Dashboard() {
   // Dynamic rotating messages for searching phase
 
   const searchingMessages = [
-    "Finding friend…",
-    "Searching chat…",
-    "Looking around…",
-    "Matching you…",
+    "Searching for match…",
+    "Finding another user…",
+    "Looking for match…",
     "Connecting…",
+    "Waiting for match…",
   ];
   
   const longSearchingMessages = [
@@ -764,7 +764,7 @@ export default function Dashboard() {
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Share this code or link with others
+                    Share this code with others to join
                   </p>
                 </div>
               )}
@@ -814,12 +814,12 @@ export default function Dashboard() {
                 Random Chat
               </CardTitle>
               <CardDescription className="text-sm">
-                Connect with a random user
+                Get matched with another online user
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 sm:space-y-4 px-4 sm:px-6 pb-4 sm:pb-6">
               <p className="text-xs sm:text-sm text-muted-foreground">
-                Get matched with another online user for a private ephemeral conversation.
+                Start a random chat to be automatically matched with another online user. Messages auto-delete after 1 hour.
               </p>
               
               {isSearching ? (
@@ -854,7 +854,7 @@ export default function Dashboard() {
                     Cancel Search
                   </Button>
                   <p className="text-xs text-center text-muted-foreground">
-                    Waiting for another user to join...
+                    Waiting for a match...
                   </p>
                 </div>
               ) : (

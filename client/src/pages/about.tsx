@@ -174,8 +174,7 @@ export default function About() {
                 <ul className="space-y-1 text-muted-foreground">
                   <li>• Node.js + Express</li>
                   <li>• Socket.IO server</li>
-                  <li>• Redis for temporary storage</li>
-                  <li>• AWS S3 for ephemeral file sharing</li>
+                  <li>• Redis for temporary message storage</li>
                 </ul>
               </div>
             </div>

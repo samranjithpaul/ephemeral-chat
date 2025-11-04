@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { ArrowLeft, Shield, Users, MessageSquare, FileUp, Clock, Shuffle, Github, Linkedin, Mail } from "lucide-react";
+import { ArrowLeft, Shield, Users, MessageSquare, Mic, Clock, Shuffle, Github, Linkedin, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -85,7 +85,7 @@ export default function Help() {
               <div>
                 <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">Join a Room</h4>
                 <p className="text-xs sm:text-sm text-muted-foreground">
-                  Enter a room code on the dashboard or use a shared link. You can also join via URL: yoursite.com/?room=abc123
+                  Enter a room code on the dashboard. Share the room code with others so they can join the same room.
                 </p>
               </div>
               <div>
@@ -108,7 +108,7 @@ export default function Help() {
               <div>
                 <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">Send Messages</h4>
                 <p className="text-xs sm:text-sm text-muted-foreground">
-                  Type your message in the input field and press Enter or click Send. Messages are delivered in real-time to all room members.
+                  Type your message in the input field and press Enter or click Send. You can also record audio messages using the microphone button. Messages are delivered in real-time to all room members.
                 </p>
               </div>
               <div>
@@ -123,27 +123,27 @@ export default function Help() {
           <Card>
             <CardHeader className="px-4 sm:px-6 pt-4 sm:pt-6 pb-3 sm:pb-4">
               <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
-                <FileUp className="h-4 w-4 sm:h-5 sm:w-5" />
-                File Sharing
+                <Mic className="h-4 w-4 sm:h-5 sm:w-5" />
+                Audio Messages
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 sm:px-6 pb-4 sm:pb-6 space-y-3 sm:space-y-4">
               <div>
-                <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">Supported Files</h4>
+                <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">Record Audio</h4>
                 <p className="text-xs sm:text-sm text-muted-foreground">
-                  Share images (.jpg, .png, .gif), videos (.mp4), documents (.pdf, .docx) up to 90 MB.
+                  Click the microphone button to record an audio message. Press and hold to record, then release to send.
                 </p>
               </div>
               <div>
-                <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">Permission Required</h4>
+                <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">Playback</h4>
                 <p className="text-xs sm:text-sm text-muted-foreground">
-                  When you share a file, recipients must accept before viewing. This ensures consent for all file transfers.
+                  Audio messages can be played directly in the chat. All audio messages auto-delete after 1 hour.
                 </p>
               </div>
               <div>
-                <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">View Only</h4>
+                <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">File Sharing</h4>
                 <p className="text-xs sm:text-sm text-muted-foreground">
-                  Files can be viewed temporarily but not downloaded. All files auto-delete after 1 hour.
+                  File sharing is not currently supported. You can send text and audio messages only.
                 </p>
               </div>
             </CardContent>
@@ -175,7 +175,7 @@ export default function Help() {
               <div>
                 <h4 className="font-semibold mb-1.5 sm:mb-2 text-sm sm:text-base">1-Hour Expiration</h4>
                 <p className="text-xs sm:text-sm text-muted-foreground">
-                  All data (messages, rooms, files) automatically expires after 1 hour. A countdown timer shows time remaining.
+                  All data (messages, rooms, audio) automatically expires after 1 hour. Messages persist until the room is closed or expires.
                 </p>
               </div>
               <div>
