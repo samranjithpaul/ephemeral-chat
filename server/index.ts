@@ -70,11 +70,14 @@ app.use((req, res, next) => {
   }
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 8080 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
+  // Render sets PORT automatically. Default to 8080 if not specified.
+  // Bind to 0.0.0.0 (all interfaces) to accept external connections from Render.
+  // For local development, you can set HOST=localhost if needed.
+  // This serves both the API and the client.
   const port = parseInt(process.env.PORT || '8080', 10);
-  server.listen(port, "localhost", () => {
-    log(`serving on port ${port}`);
+  // Use 0.0.0.0 by default (required for Render), allow override via HOST env var
+  const host = process.env.HOST || '0.0.0.0';
+  server.listen(port, host, () => {
+    log(`serving on ${host}:${port}`);
   });
 })();
