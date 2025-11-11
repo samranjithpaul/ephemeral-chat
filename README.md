@@ -2,6 +2,9 @@
 
 # 💬 Ephemeral Chat
 
+[Live Demo](https://ephemeral-chat-0ejy.onrender.com
+) 
+
 ### 🔒 Secure • 🚀 Private • ⏱️ Temporary
 
 **A privacy-first messaging platform with real-time chat, temporary rooms, and automatic data deletion.**
