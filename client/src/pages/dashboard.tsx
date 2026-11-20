@@ -4,7 +4,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useLocation, Link } from "wouter";
-import { Plus, LogIn, Shuffle, HelpCircle, Info, LogOut, Copy, Check, X, Loader2 } from "lucide-react";
+import { Plus, LogIn, Shuffle, HelpCircle, Info, LogOut, Check, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,14 +22,12 @@ export default function Dashboard() {
   const [roomCode, setRoomCode] = useState("");
   const [newRoomName, setNewRoomName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
-  const [isJoining, setIsJoining] = useState(false);
-  const [createdRoomId, setCreatedRoomId] = useState("");
-  const [copied, setCopied] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [searchTimeLeft, setSearchTimeLeft] = useState(60); // 60 seconds countdown
   const [searchingMessageIndex, setSearchingMessageIndex] = useState(0);
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const cancellingSearch = useRef<Promise<void> | null>(null);
+  const searchRef = useRef<{ userId: string; request?: Promise<Response> } | null>(null);
   const searchMessageTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   // Dynamic rotating messages for searching phase
@@ -59,10 +57,10 @@ export default function Dashboard() {
   const [newRoomCode, setNewRoomCode] = useState("");
   const [roomCheckStatus, setRoomCheckStatus] = useState<"idle" | "checking" | "available" | "unavailable">("idle");
   const [roomCheckMessage, setRoomCheckMessage] = useState("");
-  const roomCodeCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const { socket } = useSocket();
+  const { socket, isBound, sessionExpired } = useSocket();
 
   useEffect(() => {
     const storedUsername = sessionStorage.getItem("username");
@@ -73,78 +71,33 @@ export default function Dashboard() {
     setUsername(storedUsername);
   }, [setLocation]);
 
-  // Listen for random chat match
+  useEffect(() => {
+    if (!sessionExpired) return;
+    sessionStorage.removeItem("userId");
+    sessionStorage.removeItem("username");
+    toast({ title: "Session expired", description: "Enter your username to sign in again." });
+    setLocation("/", { replace: true });
+  }, [sessionExpired, toast, setLocation]);
+
+  const resetSearch = () => {
+    searchRef.current = null;
+    setIsSearching(false);
+    setSearchTimeLeft(60);
+    clearInterval(searchTimerRef.current ?? undefined);
+  };
+
+  const enterMatch = (data: { roomId: string; partnerUsername: string }) => {
+    if (!searchRef.current) return;
+    resetSearch();
+    soundManager.playJoin();
+    toast({ title: "Match found!", description: `Matched with ${data.partnerUsername}` });
+    setLocation(`/room/${data.roomId}`);
+  };
+
   useEffect(() => {
     if (!socket) return;
-
-    // Remove any existing listeners first to avoid stale handlers
-    socket.off("random_chat_matched");
-
-    const handleMatch = (data: { roomId: string; partnerUsername: string; status?: string }) => {
-      if (import.meta.env.DEV) {
-        console.log(`[RANDOM_CHAT] Match found event received roomId=${data.roomId} partnerUsername=${data.partnerUsername}`);
-      }
-      soundManager.playJoin();
-      setIsSearching(false);
-      setSearchTimeLeft(60);
-      setSearchingMessageIndex(0);
-      
-      // Clear timers
-      if (searchTimerRef.current) {
-        clearInterval(searchTimerRef.current);
-        searchTimerRef.current = null;
-      }
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-        searchTimeoutRef.current = null;
-      }
-      if (searchMessageTimerRef.current) {
-        clearInterval(searchMessageTimerRef.current);
-        searchMessageTimerRef.current = null;
-      }
-      
-      // Show match success message
-      toast({
-        title: " Matched!",
-        description: `Matched with ${data.partnerUsername}`,
-      });
-      
-      // CRITICAL: Set roomId in sessionStorage BEFORE navigation so socket can auto-join
-      sessionStorage.setItem("roomId", data.roomId);
-      const userId = sessionStorage.getItem("userId");
-      if (userId) {
-        sessionStorage.setItem("userId", userId);
-        if (import.meta.env.DEV) {
-          console.log(`[RANDOM_CHAT] Set roomId in sessionStorage: ${data.roomId} - navigating to room`);
-        }
-      }
-      
-      // Redirect to room immediately - room page will handle join_room
-      setLocation(`/room/${data.roomId}`);
-    };
-
-    socket.on("random_chat_matched", handleMatch);
-    
-    // Listen for random chat errors (socket not ready)
-    const handleError = (data: { message: string; roomId?: string }) => {
-      toast({
-        title: "Connection unstable",
-        description: data.message || "Trying again...",
-        variant: "destructive",
-      });
-      // If we have a roomId, still try to redirect (room was created)
-      if (data.roomId) {
-        setTimeout(() => {
-          setLocation(`/room/${data.roomId}`);
-        }, 2000);
-      }
-    };
-    socket.on("random_chat_error", handleError);
-
-    return () => {
-      socket.off("random_chat_matched", handleMatch);
-      socket.off("random_chat_error", handleError);
-    };
+    socket.on("random_chat_matched", enterMatch);
+    return () => { socket.off("random_chat_matched", enterMatch); };
   }, [socket, setLocation, toast]);
 
   // Rotate searching messages every 2.5 seconds
@@ -185,18 +138,14 @@ export default function Dashboard() {
       if (searchTimerRef.current) {
         clearInterval(searchTimerRef.current);
       }
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-      }
+      const search = searchRef.current;
+      searchRef.current = null;
+      if (search) void cancelSearch(search);
       if (searchMessageTimerRef.current) {
         clearInterval(searchMessageTimerRef.current);
       }
       if (nameCheckTimeoutRef.current) {
         clearTimeout(nameCheckTimeoutRef.current);
-      }
-      // NEW: Cleanup room code check timeout
-      if (roomCodeCheckTimeoutRef.current) {
-        clearTimeout(roomCodeCheckTimeoutRef.current);
       }
     };
   }, []);
@@ -218,45 +167,74 @@ export default function Dashboard() {
     }
 
     // Validate length
-    if (name.length < 2 || name.length > 50) {
+    if (name.length > 50) {
       setRoomNameAvailable(false);
       setIsCheckingName(false);
       return;
     }
 
-    // Debounce the check (500ms delay)
+    const controller = new AbortController();
+    setRoomNameAvailable(null);
     setIsCheckingName(true);
     nameCheckTimeoutRef.current = setTimeout(async () => {
       try {
         const encodedName = encodeURIComponent(name);
-        const response = await fetch(`/api/rooms/check/${encodedName}`);
+        const response = await fetch(`/api/rooms/check/${encodedName}`, { signal: controller.signal });
         const data = await response.json();
         
-        if (data.success !== undefined) {
+        if (controller.signal.aborted) return;
+        if (data.success) {
           setRoomNameAvailable(data.available);
         } else {
           setRoomNameAvailable(null);
         }
       } catch (error) {
-        // On error, assume available to allow creation
+        if (controller.signal.aborted) return;
         setRoomNameAvailable(null);
         if (import.meta.env.DEV) {
           console.error("[RoomNameCheck] Error checking availability:", error);
         }
       } finally {
-        setIsCheckingName(false);
+        if (!controller.signal.aborted) setIsCheckingName(false);
       }
     }, 500);
 
     return () => {
+      controller.abort();
       if (nameCheckTimeoutRef.current) {
         clearTimeout(nameCheckTimeoutRef.current);
       }
     };
   }, [newRoomName]);
 
-  // Note: Room code availability is now checked via HTTP endpoint in the onChange handler
-  // This keeps the socket events intact while using the simpler HTTP check
+  useEffect(() => {
+    if (!newRoomCode) {
+      setRoomCheckStatus("idle");
+      setRoomCheckMessage("");
+      return;
+    }
+    const controller = new AbortController();
+    setRoomCheckStatus("checking");
+    setRoomCheckMessage(COPY.ROOM.CODE_CHECKING);
+    const timeout = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/rooms/check-code/${encodeURIComponent(newRoomCode)}`, { signal: controller.signal });
+        const data = await response.json();
+        if (controller.signal.aborted) return;
+        if (!response.ok || !data.success) throw new Error("Room code check failed");
+        setRoomCheckStatus(data.available ? "available" : "unavailable");
+        setRoomCheckMessage(data.available ? COPY.ROOM.CODE_AVAILABLE : COPY.ROOM.CODE_UNAVAILABLE);
+      } catch {
+        if (controller.signal.aborted) return;
+        setRoomCheckStatus("idle");
+        setRoomCheckMessage("");
+      }
+    }, 500);
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
+  }, [newRoomCode]);
 
   const handleCreateRoom = async () => {
     if (!newRoomName.trim()) {
@@ -302,15 +280,6 @@ export default function Dashboard() {
         return;
       }
 
-      // If not available (idle or unavailable), show warning
-      if (roomCheckStatus !== "available") {
-        toast({
-          title: "Please wait",
-          description: "Room code availability check must complete before creating",
-          variant: "default",
-        });
-        return;
-      }
     }
 
     setIsCreating(true);
@@ -324,8 +293,6 @@ export default function Dashboard() {
         body: JSON.stringify({
           name: newRoomName.trim(),
           ownerId: sessionStorage.getItem("userId"),
-          ownerUsername: username,
-          maxUsers: 35,
           customCode: newRoomCode.trim() ? newRoomCode.trim() : undefined, // NEW: custom room code
         }),
       });
@@ -333,7 +300,6 @@ export default function Dashboard() {
       const data = await response.json();
 
       if (data.success && data.room) {
-        setCreatedRoomId(data.room.id);
         soundManager.playJoin();
         toast({
           title: "Room created!",
@@ -345,15 +311,7 @@ export default function Dashboard() {
         setRoomCheckStatus("idle");
         setRoomCheckMessage("");
         
-        // CRITICAL: Set roomId in sessionStorage BEFORE navigation so socket can auto-join
-        sessionStorage.setItem("roomId", data.room.id);
-        sessionStorage.setItem("userId", sessionStorage.getItem("userId") || "");
-        console.log(`[DASHBOARD] Set roomId in sessionStorage: ${data.room.id} - navigating to room`);
-        
-        // Auto-join the room after a brief delay
-        setTimeout(() => {
-          setLocation(`/room/${data.room.id}`);
-        }, 2000);
+        setLocation(`/room/${data.room.id}`);
       } else {
         toast({
           title: "Failed to create room",
@@ -375,202 +333,99 @@ export default function Dashboard() {
   };
 
   const handleJoinRoom = () => {
-    if (!roomCode.trim()) {
-      toast({
-        title: "Room code required",
-        description: "Please enter a room code",
-        variant: "destructive",
-      });
-      soundManager.playError();
+    const code = roomCode.trim().toLowerCase();
+    if (!/^[a-z0-9-]{2,20}$/.test(code)) {
+      toast({ title: "Invalid room code", description: "Use 2–20 letters, numbers, or hyphens.", variant: "destructive" });
       return;
     }
-
     soundManager.playClick();
-    
-    // CRITICAL: Set roomId in sessionStorage BEFORE navigation so socket can auto-join
-    const trimmedCode = roomCode.trim();
-    sessionStorage.setItem("roomId", trimmedCode);
-    sessionStorage.setItem("userId", sessionStorage.getItem("userId") || "");
-    console.log(`[DASHBOARD] Set roomId in sessionStorage: ${trimmedCode} - navigating to room`);
-    
-    setLocation(`/room/${trimmedCode}`);
+    setLocation(`/room/${code}`);
   };
 
-  const handleRandomChat = async () => {
-    if (isSearching) {
-      // Cancel search
-      handleCancelRandomChat();
-      return;
+  async function cancelSearch(search: { userId: string; request?: Promise<Response> }) {
+    try {
+      await search.request?.catch(() => {});
+      await fetch("/api/random-chat/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: search.userId }),
+        keepalive: true,
+      });
+    } catch {
+      // The queue entry expires automatically.
     }
+  }
+
+  const handleRandomChat = async () => {
+    const userId = sessionStorage.getItem("userId");
+    if (!userId || !isBound || searchRef.current || cancellingSearch.current) return;
 
     soundManager.playClick();
     setIsSearching(true);
     setSearchTimeLeft(60);
-    
-    const userId = sessionStorage.getItem("userId");
-    if (import.meta.env.DEV) {
-      console.log(`[RANDOM_CHAT] User queued for random match userId=${userId}`);
-    }
-    
-    try {
-      const response = await fetch("/api/random-chat/request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId }),
-      });
+    const request = fetch("/api/random-chat/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    const search = { userId, request };
+    searchRef.current = search;
 
+    try {
+      const response = await request;
       const data = await response.json();
-
+      if (searchRef.current !== search) return;
       if (data.success && data.roomId) {
-        // Immediate match - redirect
-        if (import.meta.env.DEV) {
-          console.log(`[RANDOM_CHAT] Match found immediately roomId=${data.roomId}`);
-        }
-        soundManager.playJoin();
-        setIsSearching(false);
-        toast({
-          title: "Match found!",
-          description: "You've been matched with someone",
-        });
-        setLocation(`/room/${data.roomId}`);
+        enterMatch(data);
       } else if (data.success && data.queued) {
-        // User is in queue - start countdown
-        if (import.meta.env.DEV) {
-          console.log(`[RANDOM_CHAT] User added to queue, waiting for match userId=${userId}`);
-        }
-        toast({
-          title: "Waiting for partner...",
-          description: "Searching for someone to chat with",
-        });
-        
-        // Start countdown timer
+        const expiresAt = Date.now() + data.timeout;
         searchTimerRef.current = setInterval(() => {
-          setSearchTimeLeft((prev) => {
-            if (prev <= 1) {
-              if (searchTimerRef.current) {
-                clearInterval(searchTimerRef.current);
-                searchTimerRef.current = null;
-              }
-              handleRandomChatTimeout();
-              return 0;
-            }
-            return prev - 1;
-          });
-        }, 1000);
-        
-        // Set timeout to check for match failure
-        searchTimeoutRef.current = setTimeout(() => {
-          if (isSearching) {
-            handleRandomChatTimeout();
+          const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+          setSearchTimeLeft(seconds);
+          if (seconds === 0 && searchRef.current === search) {
+            resetSearch();
+            void cancelSearch(search);
+            toast({ title: "No match found", description: "Try again when someone else is searching." });
           }
-        }, 60000);
+        }, 1000);
       } else {
-        setIsSearching(false);
-        toast({
-          title: "No users available",
-          description: "Currently no users are online. Try joining a room.",
-        });
+        resetSearch();
+        toast({ title: "Could not start random chat", description: data.message, variant: "destructive" });
       }
-    } catch (error) {
-      setIsSearching(false);
-      toast({
-        title: "Connection error",
-        description: "Unable to find a match",
-        variant: "destructive",
-      });
-      soundManager.playError();
+    } catch {
+      if (searchRef.current !== search) return;
+      resetSearch();
+      toast({ title: "Connection error", description: "Unable to find a match", variant: "destructive" });
     }
   };
 
-  const handleCancelRandomChat = async () => {
-    try {
-      await fetch("/api/random-chat/cancel", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: sessionStorage.getItem("userId") }),
-      });
-    } catch (error) {
-      // Ignore cancel errors
-    }
-    
-    setIsSearching(false);
-    setSearchTimeLeft(60);
-    setSearchingMessageIndex(0);
-    
-    if (searchTimerRef.current) {
-      clearInterval(searchTimerRef.current);
-      searchTimerRef.current = null;
-    }
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-      searchTimeoutRef.current = null;
-    }
-    if (searchMessageTimerRef.current) {
-      clearInterval(searchMessageTimerRef.current);
-      searchMessageTimerRef.current = null;
-    }
-    
-    toast({
-      title: "Search cancelled",
-      description: "Random chat search has been cancelled",
-    });
-  };
-
-  const handleRandomChatTimeout = async () => {
-    setIsSearching(false);
-    setSearchTimeLeft(60);
-    setSearchingMessageIndex(0);
-    
-    if (searchTimerRef.current) {
-      clearInterval(searchTimerRef.current);
-      searchTimerRef.current = null;
-    }
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-      searchTimeoutRef.current = null;
-    }
-    if (searchMessageTimerRef.current) {
-      clearInterval(searchMessageTimerRef.current);
-      searchMessageTimerRef.current = null;
-    }
-    
-    // Remove from queue
-    await handleCancelRandomChat();
-    
-    toast({
-      title: "No match found",
-      description: "No other users are searching right now. Try again later!",
-      variant: "destructive",
-    });
-    soundManager.playError();
+  const handleCancelRandomChat = () => {
+    const search = searchRef.current;
+    if (!search) return;
+    resetSearch();
+    cancellingSearch.current = cancelSearch(search).finally(() => { cancellingSearch.current = null; });
+    toast({ title: "Search cancelled" });
   };
 
   const handleLogout = () => {
     soundManager.playLeave();
-    
-    // Cancel random chat search if active
-    if (isSearching) {
-      handleCancelRandomChat();
+    const userId = sessionStorage.getItem("userId");
+    const search = searchRef.current;
+    if (search) {
+      resetSearch();
+      void cancelSearch(search);
     }
-    
-    // Clear ALL user data (sessionStorage, localStorage, and any room references)
-    sessionStorage.clear();
-    localStorage.clear();
-    
-    // Clear URL to remove any room parameters
-    window.history.replaceState({}, "", "/");
-    
-    // Redirect to login (socket will disconnect automatically on page navigation)
-    setLocation("/");
-  };
-
-  const copyRoomLink = () => {
-    if (!createdRoomId) return;
-    const link = `${window.location.origin}/?room=${createdRoomId}`;
-    navigator.clipboard.writeText(link);
-    setCopied(true);
-    soundManager.playClick();
-    setTimeout(() => setCopied(false), 2000);
+    if (userId) {
+      void fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+        keepalive: true,
+      }).catch(() => {});
+    }
+    sessionStorage.removeItem("userId");
+    sessionStorage.removeItem("username");
+    setLocation("/", { replace: true });
   };
 
   const formatTime = (seconds: number) => {
@@ -655,42 +510,7 @@ export default function Dashboard() {
                     id="room-code"
                     placeholder="e.g., sam-room, team-alpha"
                     value={newRoomCode}
-                    onChange={(e) => {
-                      const value = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
-                      if (value.length <= 20) {
-                        setNewRoomCode(value);
-                        setRoomCheckStatus("checking");
-                        setRoomCheckMessage(COPY.ROOM.CODE_CHECKING);
-
-                        if (roomCodeCheckTimeoutRef.current)
-                          clearTimeout(roomCodeCheckTimeoutRef.current);
-
-                        roomCodeCheckTimeoutRef.current = setTimeout(async () => {
-                          if (!value) {
-                            setRoomCheckStatus("idle");
-                            setRoomCheckMessage("");
-                            return;
-                          }
-
-                          try {
-                            const res = await fetch(`/api/rooms/check/${encodeURIComponent(value)}`);
-                            const data = await res.json();
-
-                            if (data.success && data.available) {
-                              setRoomCheckStatus("available");
-                              setRoomCheckMessage(COPY.ROOM.CODE_AVAILABLE);
-
-                            } else {
-                              setRoomCheckStatus("unavailable");
-                              setRoomCheckMessage(COPY.ROOM.CODE_UNAVAILABLE);
-                            }
-                          } catch (error) {
-                            setRoomCheckStatus("unavailable");
-                            setRoomCheckMessage(COPY.ROOM.CODE_UNAVAILABLE);
-                          }
-                        }, 500);
-                      }
-                    }}
+                    onChange={event => setNewRoomCode(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
                     maxLength={20}
                     data-testid="input-room-code"
                     disabled={isSearching || isCreating}
@@ -743,31 +563,6 @@ export default function Dashboard() {
                 {isCreating ? "Creating Room..." : "Create Room"}
               </Button>
 
-              {createdRoomId && (
-                <div className="pt-4 border-t space-y-2">
-                  <Label className="text-xs">Room Code</Label>
-                  <div className="flex gap-2">
-                    <code className="flex-1 px-3 py-2 bg-muted rounded-md text-sm font-mono tracking-wider">
-                      {createdRoomId}
-                    </code>
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      onClick={copyRoomLink}
-                      data-testid="button-copy-link"
-                    >
-                      {copied ? (
-                        <Check className="h-4 w-4" />
-                      ) : (
-                        <Copy className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Share this code with others to join
-                  </p>
-                </div>
-              )}
             </CardContent>
           </Card>
 
@@ -784,20 +579,20 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent className="space-y-3 sm:space-y-4 px-4 sm:px-6 pb-4 sm:pb-6">
               <div className="space-y-2">
-                <Label htmlFor="room-code" className="text-sm">Room Code</Label>
+                <Label htmlFor="join-room-code" className="text-sm">Room Code</Label>
                 <Input
-                  id="room-code"
+                  id="join-room-code"
                   placeholder="abc123"
                   value={roomCode}
                   onChange={(e) => setRoomCode(e.target.value)}
                   className="font-mono tracking-wider text-sm sm:text-base h-10 sm:h-11"
-                  data-testid="input-room-code"
+                  data-testid="input-join-room-code"
                   disabled={isSearching}
                 />
               </div>
               <Button
                 onClick={handleJoinRoom}
-                disabled={isJoining || isSearching}
+                disabled={isSearching}
                 className="w-full h-10 sm:h-11 text-sm sm:text-base"
                 data-testid="button-join-room"
               >
@@ -862,7 +657,7 @@ export default function Dashboard() {
                   onClick={handleRandomChat}
                   variant="outline"
                   className="w-full h-10 sm:h-11 text-sm sm:text-base"
-                  disabled={isSearching}
+                  disabled={!isBound}
                   data-testid="button-random-chat"
                 >
                   <Shuffle className="h-4 w-4 mr-2" />

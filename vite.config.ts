@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
@@ -44,9 +45,9 @@ export default defineConfig({
       deny: ["**/.*"],
     },
     proxy: {
-      // Proxy all /api requests to the Express backend
+      "/socket.io": { target: `http://localhost:${process.env.PORT || 8080}`, ws: true },
       "/api": {
-        target: "http://localhost:8080",
+        target: `http://localhost:${process.env.PORT || 8080}`,
         changeOrigin: true,
         secure: false,
       },
