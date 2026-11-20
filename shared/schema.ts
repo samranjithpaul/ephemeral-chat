@@ -12,6 +12,24 @@ export const insertUserSchema = userSchema.omit({ id: true });
 export type User = z.infer<typeof userSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 
+// Message Schema - WhatsApp-like with status tracking
+export const messageSchema = z.object({
+  id: z.string(),
+  roomId: z.string(),
+  username: z.string(),
+  content: z.string().min(1).max(5000),
+  timestamp: z.number(),
+  type: z.enum(["text", "system", "audio"]).default("text"),
+  audioData: z.string().optional(), // Base64 encoded audio for audio messages
+  status: z.enum(["sending", "sent", "delivered", "failed"]).optional(), // WhatsApp-like message status
+  tempId: z.string().optional(), // For optimistic updates tracking
+});
+
+export const insertMessageSchema = messageSchema.omit({ id: true, timestamp: true });
+
+export type Message = z.infer<typeof messageSchema>;
+export type InsertMessage = z.infer<typeof insertMessageSchema>;
+
 // Room Schema
 export const roomSchema = z.object({
   id: z.string(),
@@ -28,24 +46,6 @@ export const insertRoomSchema = roomSchema.omit({ id: true, users: true, created
 
 export type Room = z.infer<typeof roomSchema>;
 export type InsertRoom = z.infer<typeof insertRoomSchema>;
-
-// Message Schema - WhatsApp-like with status tracking
-export const messageSchema = z.object({
-  id: z.string(),
-  roomId: z.string(),
-  username: z.string(),
-  content: z.string().min(1).max(5000),
-  timestamp: z.number(),
-  type: z.enum(["text", "system", "audio"]).default("text"),
-  audioData: z.string().optional(), // Base64 encoded audio for audio messages
-  status: z.enum(["sending", "sent", "delivered"]).optional(), // WhatsApp-like message status
-  tempId: z.string().optional(), // For optimistic updates tracking
-});
-
-export const insertMessageSchema = messageSchema.omit({ id: true, timestamp: true });
-
-export type Message = z.infer<typeof messageSchema>;
-export type InsertMessage = z.infer<typeof insertMessageSchema>;
 
 // File Metadata Schema
 export const fileMetadataSchema = z.object({

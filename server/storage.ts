@@ -1,7 +1,3 @@
-// PATCH: 2025-11-02 - Refactor storage for atomic operations, socket tracking, and idempotency
-// Fixes: Race conditions in TTL refresh, multi-tab user tracking, atomic mutations
-// Test: Join multiple tabs, verify socket counting, check TTL refresh after operations
-
 import { redis } from "./utils/redis";
 import { v4 as uuidv4 } from "uuid";
 import type { User, InsertUser, Room, InsertRoom, Message } from "@shared/schema";
@@ -19,12 +15,7 @@ const randomChatQueueKey = "random_chat_queue"; // Sorted set: score = timestamp
 const ROOM_TTL = 3600; // 1 hour
 // Room deletion grace period - configurable via env, default 60 seconds
 const ROOM_DELETE_GRACE_MS = parseInt(process.env.ROOM_DELETE_GRACE_MS || "60000", 10); // 60 seconds default
-const MIN_ROOM_AGE_TO_DELETE = ROOM_DELETE_GRACE_MS;
 const RANDOM_CHAT_TIMEOUT = 60000; // 1 minute in milliseconds
-
-// Track scheduled room deletions - key: roomId, value: { timeout, scheduledAt }
-const scheduledDeletions = new Map<string, { timeout: NodeJS.Timeout; scheduledAt: number }>();
-const emptySinceKey = (roomId: string) => `room:${roomId}:emptySince`;
 
 // Helper: Atomic TTL refresh using pipeline
 async function refreshRoomTTLs(roomId: string): Promise<void> {
@@ -40,76 +31,15 @@ async function refreshRoomTTLs(roomId: string): Promise<void> {
 }
 
 // Room operations
-export async function getRoom(roomId: string, skipAutoDelete = false): Promise<Room | null> {
-  logger.info("getRoom", `Fetching room [${roomId}]`, { roomId });
-  
-  if (!roomId || typeof roomId !== "string") {
-    logger.warn("getRoom", "Invalid roomId", { roomId });
-    return null;
-  }
-  
-  if (!redis || redis.status !== "ready") {
-    logger.warn("getRoom", "Redis not ready", { roomId });
-    return null;
-  }
-  
-  const raw = await redis.get(roomKey(roomId));
-  if (!raw) {
-    logger.debug("getRoom", `Room [${roomId}] not found`, { roomId });
-    return null;
-  }
-  
-  try {
-    const room = JSON.parse(raw);
-    
-    // Ensure createdAt exists
-    if (!room.createdAt) {
-      room.createdAt = Date.now();
-      await saveRoom(roomId, room);
-    }
-    
-    // CRITICAL: Compute users array from Redis set (single source of truth)
-    // Room.users array is now read-only - computed from set
-    const usersFromSet = await getRoomUsers(roomId);
-    room.users = usersFromSet.map(u => u.username); // Backward compatibility: populate array from set
-    
-    // Auto-delete empty rooms ONLY if room is > grace period old AND not skipped
-    // Check set, not array, for accuracy
-    if (!skipAutoDelete && usersFromSet.length === 0) {
-      const age = Date.now() - (room.createdAt || 0);
-      if (age < ROOM_DELETE_GRACE_MS) {
-        logger.debug("getRoom", `Skipping auto-delete for fresh room`, { roomId, age });
-        return room;
-      }
-      logger.info("getRoom", `Auto-deleting empty room`, { roomId, age });
-      await redis.del(roomKey(roomId));
-      await redis.del(usersKey(roomId));
-      await redis.del(messagesKey(roomId));
-      await redis.del(emptySinceKey(roomId));
-      return null;
-    }
-    
-    logger.debug("getRoom", `Room found`, { roomId, userCount: usersFromSet.length });
-    return room;
-  } catch (e: any) {
-    logger.error("getRoom", "Failed to parse JSON", { roomId }, e);
-    return null;
-  }
-}
+export async function getRoom(roomId: string): Promise<Room | null> {
+  if (typeof roomId !== "string" || !roomId || redis?.status !== "ready") return null;
 
-export async function saveRoom(roomId: string, roomObj: Room): Promise<void> {
-  if (!redis || redis.status !== "ready") {
-    logger.warn("saveRoom", "Redis not ready", { roomId });
-    return;
-  }
-  
-  // Atomic: SET + EXPIRE in pipeline to avoid race conditions
-  const pipeline = redis.pipeline();
-  pipeline.set(roomKey(roomId), JSON.stringify(roomObj));
-  pipeline.expire(roomKey(roomId), ROOM_TTL);
-  await pipeline.exec();
-  
-  logger.debug("saveRoom", `Room saved`, { roomId, userCount: roomObj.users?.length || 0 });
+  const raw = await redis.get(roomKey(roomId));
+  if (!raw) return null;
+
+  const room: Room = JSON.parse(raw);
+  room.users = (await getRoomUsers(roomId)).map(user => user.username);
+  return room;
 }
 
 export async function createRoom(insertRoom: InsertRoom): Promise<Room> {
@@ -131,7 +61,7 @@ export async function createRoomWithId(
     const trimmedCode = customCode.trim().toLowerCase();
     
     // Check if room with this code already exists
-    const existingRoom = await getRoom(trimmedCode, true);
+    const existingRoom = await getRoom(trimmedCode);
     if (existingRoom) {
       throw new Error("Room already exists");
     }
@@ -167,28 +97,24 @@ export async function createRoomWithId(
 
 // Internal implementation of createRoomWithId
 async function createRoomWithIdImpl(insertRoom: InsertRoom & { id: string }): Promise<Room> {
-  const roomId = insertRoom.id;
-  const room: Room = {
-    ...insertRoom,
-    id: roomId,
-    users: [], // Array is now computed from set - initialize empty
-    createdAt: Date.now(),
-    messages: [],
-  };
-  
-  await saveRoom(roomId, room);
-  
-  // Add owner to users set (canonical storage)
-  if (insertRoom.ownerId && insertRoom.ownerUsername) {
-    await addUserToRoom(roomId, { id: insertRoom.ownerId, username: insertRoom.ownerUsername });
-  }
-  
-  logger.info("createRoom", `Room created`, { roomId, name: room.name, ownerId: insertRoom.ownerId });
-  // Return room with computed users array
-  const finalRoom = await getRoom(roomId, true);
-  return finalRoom || room;
-}
+  if (redis?.status !== "ready") throw new Error("Room storage is unavailable");
 
+  const room: Room = { ...insertRoom, users: [], createdAt: Date.now() };
+  const owner = JSON.stringify({ id: room.ownerId, username: room.ownerUsername });
+  const created = await redis.eval(`
+    if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+    redis.call('DEL', KEYS[2], KEYS[3])
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+    if ARGV[2] ~= '' then
+      redis.call('SADD', KEYS[2], ARGV[2])
+      redis.call('EXPIRE', KEYS[2], ARGV[3])
+    end
+    return 1
+  `, 3, roomKey(room.id), usersKey(room.id), messagesKey(room.id),
+    JSON.stringify(room), room.maxUsers === 2 ? owner : "", ROOM_TTL);
+  if (created !== 1) throw new Error("Room code already exists");
+  return room;
+}
 
 // Socket tracking per user (multi-tab support)
 export async function addSocketToUser(userId: string, socketId: string): Promise<void> {
@@ -229,308 +155,59 @@ export async function getUserSocketCount(userId: string): Promise<number> {
 }
 
 // User room operations - atomic and idempotent
-export async function addUserToRoom(roomId: string, user: { id: string; username: string }): Promise<boolean> {
-  const startTime = new Date().toISOString();
-  console.log(`[DEBUG:addUserToRoom] START timestamp=${startTime} roomId=${roomId} userId=${user.id} username=${user.username}`);
-  logger.info("addUserToRoom", `${user.username} joining room`, { roomId, userId: user.id, username: user.username });
-  
-  if (!roomId || !user || typeof roomId !== "string") {
-    const endTime = new Date().toISOString();
-    console.log(`[DEBUG:addUserToRoom] END timestamp=${endTime} roomId=${roomId || 'undefined'} userId=${user?.id || 'undefined'} result=failed reason=invalid_params`);
-    logger.warn("addUserToRoom", "Invalid params", { roomId, userId: user?.id });
-    return false;
-  }
-  
-  if (!redis || redis.status !== "ready") {
-    const endTime = new Date().toISOString();
-    console.log(`[DEBUG:addUserToRoom] END timestamp=${endTime} roomId=${roomId} userId=${user.id} result=failed reason=redis_not_ready`);
-    logger.warn("addUserToRoom", "Redis not ready", { roomId, userId: user.id });
-    return false;
-  }
-  
-  try {
-    // Get room WITHOUT auto-deletion to prevent race condition
-    console.log(`[DEBUG:addUserToRoom] Fetching room roomId=${roomId} userId=${user.id}`);
-    let room: Room | null = null;
-    const raw = await redis.get(roomKey(roomId));
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          const parsedRoom = parsed as Room;
-          if (!parsedRoom.createdAt) {
-            parsedRoom.createdAt = Date.now();
-          }
-          room = parsedRoom;
-        }
-      } catch (e) {
-        console.log(`[DEBUG:addUserToRoom] Failed to parse room roomId=${roomId} userId=${user.id}`);
-        logger.warn("addUserToRoom", "Failed to parse room", { roomId });
-        room = null;
-      }
-    }
-    
-    // Create room if it doesn't exist
-    if (!room) {
-      console.log(`[DEBUG:addUserToRoom] Creating new room roomId=${roomId} userId=${user.id}`);
-      logger.info("addUserToRoom", `Creating new room`, { roomId });
-      room = {
-        id: roomId,
-        name: `Room ${roomId}`,
-        ownerId: "",
-        ownerUsername: "",
-        users: [], // Array is computed from set - initialize empty
-        maxUsers: 35,
-        createdAt: Date.now(),
-        messages: [],
-      };
-      // Save initial room metadata
-      await saveRoom(roomId, room);
-    }
-    
-    // CANCEL any scheduled deletion if user is joining
-    const scheduled = scheduledDeletions.get(roomId);
-    if (scheduled) {
-      clearTimeout(scheduled.timeout);
-      scheduledDeletions.delete(roomId);
-      await redis.del(emptySinceKey(roomId));
-      console.log(`⌛ [SCHEDULE_DELETE] roomId=${roomId} cancelled reason=user_joined`);
-    }
-    
-    // Atomic: Add user to set and update room metadata in pipeline
-    console.log(`[DEBUG:addUserToRoom] Executing Redis pipeline roomId=${roomId} userId=${user.id} username=${user.username}`);
-    const userJson = JSON.stringify({ id: user.id, username: user.username });
-    const pipeline = redis.pipeline();
-    
-    // Check if user already in set (idempotent check)
-    const existingMembers = await redis.smembers(usersKey(roomId));
-    const wasAlreadyInRoom = existingMembers.some(m => {
-      try {
-        const parsed = JSON.parse(m);
-        return parsed?.id === user.id;
-      } catch {
-        return false;
-      }
-    });
-    
-    if (!wasAlreadyInRoom) {
-      pipeline.sadd(usersKey(roomId), userJson);
-    }
-    
-    // Update room metadata with updatedAt timestamp
-    const updatedRoom = { ...room, updatedAt: Date.now() };
-    pipeline.set(roomKey(roomId), JSON.stringify(updatedRoom));
-    
-    // Refresh all TTLs atomically (CRITICAL: Active rooms never expire early)
-    pipeline.expire(usersKey(roomId), ROOM_TTL);
-    pipeline.expire(roomKey(roomId), ROOM_TTL);
-    
-    // Refresh messages TTL if it exists
-    const messagesExist = await redis.exists(messagesKey(roomId));
-    if (messagesExist) {
-      pipeline.expire(messagesKey(roomId), ROOM_TTL);
-    }
-    
-    await pipeline.exec();
-    
-    // ASSERTION: Verify user was added to set
-    const membersAfter = await redis.smembers(usersKey(roomId));
-    
-    // CRITICAL: After user joins, if room was empty and now has users, ensure TTL is refreshed
-    // This prevents rooms from expiring during active use
-    if (membersAfter.length > 0) {
-      await refreshRoomTTLs(roomId);
-      console.log(`[PRESENCE] TTL refreshed on join roomId=${roomId} userId=${user.id} totalUsers=${membersAfter.length}`);
-    }
-    const userPresent = membersAfter.some(m => {
-      try {
-        const parsed = JSON.parse(m);
-        return parsed?.id === user.id;
-      } catch {
-        return false;
-      }
-    });
-    
-    if (!userPresent && !wasAlreadyInRoom) {
-      const endTime = new Date().toISOString();
-      console.log(`❌ [ASSERT] addUserToRoom failed - member missing roomId=${roomId} userId=${user.id}`);
-      console.log(`[DEBUG:addUserToRoom] END timestamp=${endTime} roomId=${roomId} userId=${user.id} result=failed reason=assertion_failed`);
-      logger.error("addUserToRoom", "Assertion failed - user not in set after add", { roomId, userId: user.id });
-      return false;
-    }
-    
-    const finalUserCount = membersAfter.length;
-    console.log(`✅ [ADD_USER] roomId=${roomId} userId=${user.id} result=ok wasAlreadyInRoom=${wasAlreadyInRoom} finalCount=${finalUserCount}`);
-    
-    const endTime = new Date().toISOString();
-    console.log(`[DEBUG:addUserToRoom] END timestamp=${endTime} roomId=${roomId} userId=${user.id} username=${user.username} result=success totalUsers=${finalUserCount} wasAlreadyInRoom=${wasAlreadyInRoom}`);
-    logger.info("addUserToRoom", `${user.username} added to room`, { roomId, userId: user.id, totalUsers: finalUserCount });
-    return true;
-  } catch (e: any) {
-    const endTime = new Date().toISOString();
-    console.log(`[DEBUG:addUserToRoom] END timestamp=${endTime} roomId=${roomId} userId=${user.id} result=failed reason=error`);
-    logger.error("addUserToRoom", "Error adding user to room", { roomId, userId: user.id }, e);
-    return false;
-  }
+export async function addUserToRoom(
+  roomId: string,
+  user: { id: string; username: string },
+): Promise<"joined" | "room_not_found" | "room_full" | "server_error"> {
+  if (redis?.status !== "ready") return "server_error";
+
+  const member = JSON.stringify({ id: user.id, username: user.username });
+  const result = await redis.eval(`
+    local raw = redis.call('GET', KEYS[1])
+    if not raw then return 'room_not_found' end
+    local room = cjson.decode(raw)
+    local members = redis.call('SMEMBERS', KEYS[2])
+    local alreadyJoined = false
+    for _, entry in ipairs(members) do
+      local ok, existing = pcall(cjson.decode, entry)
+      if ok and type(existing) == 'table' and existing.id == ARGV[1] then
+        alreadyJoined = true
+        break
+      end
+    end
+    if not alreadyJoined then
+      if #members >= (room.maxUsers or 35) then return 'room_full' end
+      redis.call('SADD', KEYS[2], ARGV[2])
+    end
+    for _, key in ipairs(KEYS) do redis.call('EXPIRE', key, ARGV[3]) end
+    return 'joined'
+  `, 3, roomKey(roomId), usersKey(roomId), messagesKey(roomId), user.id, member, ROOM_TTL);
+  return result as "joined" | "room_not_found" | "room_full";
 }
 
 export async function removeUserFromRoom(roomId: string, userId: string): Promise<boolean> {
-  const startTime = new Date().toISOString();
-  console.log(`[DEBUG:removeUserFromRoom] START timestamp=${startTime} roomId=${roomId} userId=${userId}`);
-  logger.info("removeUserFromRoom", `Removing user from room`, { roomId, userId });
-  
-  if (!roomId || !userId || typeof roomId !== "string") {
-    const endTime = new Date().toISOString();
-    console.log(`[DEBUG:removeUserFromRoom] END timestamp=${endTime} roomId=${roomId || 'undefined'} userId=${userId || 'undefined'} result=failed reason=invalid_params`);
-    logger.warn("removeUserFromRoom", "Invalid params", { roomId, userId });
-    return false;
-  }
-  
-  if (!redis || redis.status !== "ready") {
-    const endTime = new Date().toISOString();
-    console.log(`[DEBUG:removeUserFromRoom] END timestamp=${endTime} roomId=${roomId} userId=${userId} result=failed reason=redis_not_ready`);
-    logger.warn("removeUserFromRoom", "Redis not ready", { roomId, userId });
-    return false;
-  }
-  
-  try {
-    // Get user for username lookup
-    console.log(`[DEBUG:removeUserFromRoom] Fetching user roomId=${roomId} userId=${userId}`);
-    const user = await getUser(userId);
-    if (!user) {
-      const endTime = new Date().toISOString();
-      console.log(`[DEBUG:removeUserFromRoom] END timestamp=${endTime} roomId=${roomId} userId=${userId} result=failed reason=user_not_found`);
-      logger.warn("removeUserFromRoom", "User not found", { roomId, userId });
-      return false;
-    }
-    
-    // Get room metadata for age calculation
-    const room = await getRoom(roomId, true); // Skip auto-delete during removal
-    
-    // Remove from users set (idempotent - removing non-existent is no-op)
-    console.log(`[DEBUG:removeUserFromRoom] Removing from Redis set roomId=${roomId} userId=${userId} username=${user.username}`);
-    const members = await redis.smembers(usersKey(roomId));
-    let userJsonToRemove: string | null = null;
-    for (const m of members) {
-      try {
-        const parsed = JSON.parse(m);
-        if (parsed?.id === userId) {
-          userJsonToRemove = m;
-          break;
-        }
-      } catch (e) {
-        // ignore invalid entries
-      }
-    }
-    
-    // Atomic pipeline: remove user, update room metadata, refresh TTLs
-    const pipeline = redis.pipeline();
-    
-    if (userJsonToRemove) {
-      pipeline.srem(usersKey(roomId), userJsonToRemove);
-    } else {
-      console.log(`⚠ [REMOVE_USER] user not found in set roomId=${roomId} userId=${userId} - proceeding to ensure idempotency`);
-    }
-    
-    // Update room metadata with updatedAt (if room exists)
-    if (room) {
-      const updatedRoom = { ...room, updatedAt: Date.now() };
-      pipeline.set(roomKey(roomId), JSON.stringify(updatedRoom));
-    }
-    
-    // Refresh TTLs
-    pipeline.expire(usersKey(roomId), ROOM_TTL);
-    if (room) {
-      pipeline.expire(roomKey(roomId), ROOM_TTL);
-    }
-    
-    await pipeline.exec();
-    
-    // Compute remaining after removal (from set, not array)
-    console.log(`[DEBUG:removeUserFromRoom] Computing remaining users roomId=${roomId} userId=${userId}`);
-    const remaining = await redis.scard(usersKey(roomId));
-    
-    // If remaining === 0, handle room deletion with grace period
-    if (remaining === 0 && room) {
-      const age = Date.now() - (room.createdAt || 0);
-      console.log(`[DEBUG:removeUserFromRoom] Room empty check roomId=${roomId} userId=${userId} age=${age}ms gracePeriod=${ROOM_DELETE_GRACE_MS}`);
-      
-      if (age >= ROOM_DELETE_GRACE_MS) {
-        // Room old enough - delete immediately
-        // CRITICAL: Verify room is still empty before deleting
-        const finalCheck = await redis.scard(usersKey(roomId));
-        if (finalCheck === 0) {
-          await redis.del(roomKey(roomId));
-          await redis.del(usersKey(roomId));
-          await redis.del(messagesKey(roomId));
-          await redis.del(emptySinceKey(roomId));
-          // Cancel any scheduled deletion
-          const scheduled = scheduledDeletions.get(roomId);
-          if (scheduled) {
-            clearTimeout(scheduled.timeout);
-            scheduledDeletions.delete(roomId);
-          }
-          console.log(`🗑️ [ROOM DELETE] roomId=${roomId} reason=empty_and_aged age=${age}ms`);
-          console.log(`[DEBUG:removeUserFromRoom] Room deleted roomId=${roomId} userId=${userId} age=${age}ms`);
-        } else {
-          console.log(`[PRESENCE] Room deletion cancelled - user rejoined roomId=${roomId} finalCheck=${finalCheck}`);
-        }
-      } else {
-        // Room too fresh - schedule deletion after grace period
-        const emptySince = Date.now();
-        await redis.setex(emptySinceKey(roomId), Math.ceil(ROOM_DELETE_GRACE_MS / 1000), String(emptySince));
-        
-        // Cancel existing scheduled deletion if any
-        const existingScheduled = scheduledDeletions.get(roomId);
-        if (existingScheduled) {
-          clearTimeout(existingScheduled.timeout);
-        }
-        
-        // Schedule deletion
-        const delay = ROOM_DELETE_GRACE_MS - age;
-        const scheduledAt = Date.now();
-        const timeout = setTimeout(async () => {
-          // Re-check before deleting (user might have joined)
-          const currentUsers = await getRoomUsers(roomId);
-          if (currentUsers.length === 0) {
-            const finalRoom = await getRoom(roomId, true);
-            if (finalRoom) {
-              const finalAge = Date.now() - (finalRoom.createdAt || 0);
-              await redis.del(roomKey(roomId));
-              await redis.del(usersKey(roomId));
-              await redis.del(messagesKey(roomId));
-              await redis.del(emptySinceKey(roomId));
-              scheduledDeletions.delete(roomId);
-              console.log(`🗑️ [ROOM DELETE] roomId=${roomId} reason=empty_and_aged age=${finalAge}ms scheduled`);
-            }
-          } else {
-            // User joined during grace - cancel deletion
-            scheduledDeletions.delete(roomId);
-            await redis.del(emptySinceKey(roomId));
-            console.log(`⌛ [SCHEDULE_DELETE] roomId=${roomId} cancelled reason=user_joined_during_grace`);
-          }
-        }, delay);
-        
-        scheduledDeletions.set(roomId, { timeout, scheduledAt });
-        console.log(`⌛ [SCHEDULE_DELETE] roomId=${roomId} scheduledAt=${scheduledAt} dueTo=empty_fresh delay=${delay}ms`);
-      }
-    } else if (remaining > 0) {
-      // Refresh TTLs if room still has users
-      console.log(`[DEBUG:removeUserFromRoom] Refreshing TTLs roomId=${roomId} userId=${userId} remaining=${remaining}`);
-      await refreshRoomTTLs(roomId);
-    }
-    
-    const endTime = new Date().toISOString();
-    const isEmpty = remaining === 0;
-    console.log(`[DEBUG:removeUserFromRoom] END timestamp=${endTime} roomId=${roomId} userId=${userId} result=success remaining=${remaining} isEmpty=${isEmpty}`);
-    logger.info("removeUserFromRoom", `User removed from room`, { roomId, userId, remaining });
-    return isEmpty;
-  } catch (e: any) {
-    const endTime = new Date().toISOString();
-    console.log(`[DEBUG:removeUserFromRoom] END timestamp=${endTime} roomId=${roomId} userId=${userId} result=failed reason=error`);
-    logger.error("removeUserFromRoom", "Error removing user from room", { roomId, userId }, e);
-    return false;
-  }
+  if (redis?.status !== "ready") return false;
+
+  const removed = await redis.eval(`
+    local removed = 0
+    for _, entry in ipairs(redis.call('SMEMBERS', KEYS[2])) do
+      local ok, member = pcall(cjson.decode, entry)
+      if ok and type(member) == 'table' and member.id == ARGV[1] then
+        removed = removed + redis.call('SREM', KEYS[2], entry)
+      end
+    end
+    if removed > 0 and redis.call('SCARD', KEYS[2]) == 0 then
+      for _, key in ipairs(KEYS) do
+        local ttl = redis.call('PTTL', key)
+        if ttl == -1 or ttl > tonumber(ARGV[2]) then
+          redis.call('PEXPIRE', key, ARGV[2])
+        end
+      end
+    end
+    return removed
+  `, 3, roomKey(roomId), usersKey(roomId), messagesKey(roomId),
+    userId, Number.isFinite(ROOM_DELETE_GRACE_MS) ? Math.max(1, ROOM_DELETE_GRACE_MS) : 60000);
+  return Number(removed) > 0;
 }
 
 export async function getRoomUsers(roomId: string): Promise<{ id: string; username: string }[]> {
@@ -554,33 +231,17 @@ export async function getRoomUsers(roomId: string): Promise<{ id: string; userna
 }
 
 // Message operations - atomic with TTL refresh
-export async function saveMessage(roomId: string, message: any): Promise<boolean> {
-  if (!roomId || typeof roomId !== "string") {
-    logger.error("saveMessage", "Missing or invalid roomId", { roomId });
-    throw new Error("saveMessage missing roomId");
-  }
-  
-  if (!redis || redis.status !== "ready") {
-    logger.warn("saveMessage", "Redis not ready", { roomId });
-    return false;
-  }
-  
-  try {
-    // Atomic: RPUSH, LTRIM, EXPIRE in pipeline
-    const pipeline = redis.pipeline();
-    pipeline.rpush(messagesKey(roomId), JSON.stringify(message));
-    pipeline.ltrim(messagesKey(roomId), -100, -1); // Keep last 100
-    pipeline.expire(messagesKey(roomId), ROOM_TTL);
-    pipeline.expire(roomKey(roomId), ROOM_TTL);
-    pipeline.expire(usersKey(roomId), ROOM_TTL);
-    await pipeline.exec();
-    
-    logger.debug("saveMessage", `Message saved`, { roomId, messageId: message.id });
-    return true;
-  } catch (e: any) {
-    logger.error("saveMessage", "Error saving message", { roomId, messageId: message.id }, e);
-    return false;
-  }
+export async function saveMessage(roomId: string, message: Message): Promise<boolean> {
+  if (redis?.status !== "ready") return false;
+
+  const saved = await redis.eval(`
+    if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+    redis.call('RPUSH', KEYS[3], ARGV[1])
+    redis.call('LTRIM', KEYS[3], -100, -1)
+    for _, key in ipairs(KEYS) do redis.call('EXPIRE', key, ARGV[2]) end
+    return 1
+  `, 3, roomKey(roomId), usersKey(roomId), messagesKey(roomId), JSON.stringify(message), ROOM_TTL);
+  return saved === 1;
 }
 
 export async function loadMessages(roomId: string, count = 50): Promise<Message[]> {
@@ -621,24 +282,8 @@ export async function loadMessages(roomId: string, count = 50): Promise<Message[
 }
 
 // User operations
-export async function setUser(userId: string, userObj: User): Promise<boolean> {
-  if (!redis || redis.status !== "ready") return false;
-  
-  try {
-    // User data does not expire - only deleted on explicit logout
-    await redis.set(userKey(userId), JSON.stringify(userObj));
-    // Username mapping expires
-    await redis.setex(usernameKey(userObj.username), ROOM_TTL, userId);
-    logger.debug("setUser", `User saved`, { userId, username: userObj.username });
-    return true;
-  } catch (e: any) {
-    logger.error("setUser", "Error saving user", { userId }, e);
-    return false;
-  }
-}
-
 export async function getUser(userId: string): Promise<User | null> {
-  if (!redis || redis.status !== "ready") return null;
+  if (typeof userId !== "string" || !userId || redis?.status !== "ready") return null;
   
   try {
     const raw = await redis.get(userKey(userId));
@@ -667,76 +312,39 @@ export async function getUserByUsername(username: string): Promise<User | null> 
 }
 
 export async function createUser(insertUser: InsertUser): Promise<User> {
-  const userId = uuidv4();
-  const user: User = {
-    ...insertUser,
-    id: userId,
-  };
-  
-  await setUser(userId, user);
-  logger.info("createUser", `User created`, { userId, username: user.username });
+  if (redis?.status !== "ready") throw new Error("User storage is unavailable");
+
+  const user: User = { ...insertUser, id: uuidv4() };
+  const created = await redis.eval(`
+    local existingId = redis.call('GET', KEYS[1])
+    if existingId then
+      return 0
+    end
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+    redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+    return 1
+  `, 2, usernameKey(user.username), userKey(user.id), user.id, JSON.stringify(user), ROOM_TTL);
+  if (created !== 1) throw new Error("Username already taken. Please choose another.");
   return user;
 }
 
-// Random Chat Queue Operations
-export async function addToRandomQueue(userId: string): Promise<{ matched: boolean; partnerUserId?: string; roomId?: string }> {
-  logger.info("addToRandomQueue", `User joining queue`, { userId });
-  
-  if (!redis || redis.status !== "ready") {
-    logger.warn("addToRandomQueue", "Redis not ready", { userId });
-    return { matched: false };
-  }
-  
-  try {
-    const now = Date.now();
-    
-    // Clean up expired queue entries (older than 1 minute)
-    const expiredBefore = now - RANDOM_CHAT_TIMEOUT;
-    await redis.zremrangebyscore(randomChatQueueKey, 0, expiredBefore);
-    
-    // Check if user is already in queue
-    const existingScore = await redis.zscore(randomChatQueueKey, userId);
-    if (existingScore !== null) {
-      logger.debug("addToRandomQueue", "User already in queue", { userId });
-      return { matched: false };
-    }
-    
-    // Look for a waiting partner (someone who joined in the last minute)
-    const waitingPartners = await redis.zrangebyscore(
-      randomChatQueueKey,
-      now - RANDOM_CHAT_TIMEOUT,
-      now,
-      "LIMIT",
-      0,
-      1
-    );
-    
-    if (waitingPartners.length > 0 && waitingPartners[0] !== userId) {
-      // Found a match!
-      const partnerUserId = waitingPartners[0];
-      
-      // Remove both users from queue atomically
-      const pipeline = redis.pipeline();
-      pipeline.zrem(randomChatQueueKey, userId);
-      pipeline.zrem(randomChatQueueKey, partnerUserId);
-      await pipeline.exec();
-      
-      logger.info("addToRandomQueue", `Match found`, { userId, partnerUserId });
-      
-      return { matched: true, partnerUserId };
-    }
-    
-    // No match - add user to queue with current timestamp as score
-    await redis.zadd(randomChatQueueKey, now, userId);
-    // Set TTL on queue (cleanup safety)
-    await redis.expire(randomChatQueueKey, RANDOM_CHAT_TIMEOUT / 1000 + 10);
-    
-    logger.info("addToRandomQueue", `User added to queue`, { userId, queueSize: await redis.zcard(randomChatQueueKey) });
-    return { matched: false };
-  } catch (e: any) {
-    logger.error("addToRandomQueue", "Error in random chat queue", { userId }, e);
-    return { matched: false };
-  }
+export async function addToRandomQueue(userId: string): Promise<{ matched: boolean; partnerUserId?: string }> {
+  if (redis?.status !== "ready") throw new Error("Random chat storage is unavailable");
+
+  const now = Date.now();
+  const partner = await redis.eval(`
+    redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+    if redis.call('ZSCORE', KEYS[1], ARGV[2]) then return false end
+    local match = redis.call('ZRANGE', KEYS[1], 0, 0)[1]
+    if match then
+      redis.call('ZREM', KEYS[1], match)
+      return match
+    end
+    redis.call('ZADD', KEYS[1], ARGV[3], ARGV[2])
+    redis.call('EXPIRE', KEYS[1], ARGV[4])
+    return false
+  `, 1, randomChatQueueKey, now - RANDOM_CHAT_TIMEOUT, userId, now, RANDOM_CHAT_TIMEOUT / 1000 + 10);
+  return typeof partner === "string" ? { matched: true, partnerUserId: partner } : { matched: false };
 }
 
 export async function removeFromRandomQueue(userId: string): Promise<void> {
@@ -853,11 +461,10 @@ export const storage = {
     try {
       const user = await getUser(userId);
       if (user) {
-        const pipeline = redis.pipeline();
-        pipeline.del(userKey(userId));
-        pipeline.del(usernameKey(user.username));
-        pipeline.del(userSocketsKey(userId));
-        await pipeline.exec();
+        await redis.eval(`
+          if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+          redis.call('DEL', KEYS[1], KEYS[3])
+        `, 3, userKey(userId), usernameKey(user.username), userSocketsKey(userId), userId);
         logger.info("deleteUser", `User deleted`, { userId, username: user.username });
       }
     } catch (e: any) {

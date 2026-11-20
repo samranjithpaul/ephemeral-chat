@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import Dashboard from "../dashboard";
 import { COPY } from "@/lib/copy";
 
@@ -104,6 +104,23 @@ describe("Dashboard - Availability Messages", () => {
     // The actual visual comparison would be done in manual QA
     expect(screen.queryByText(COPY.ROOM.NAME_AVAILABLE)).not.toBeInTheDocument(); // Initially not available
     expect(screen.queryByText(COPY.ROOM.CODE_AVAILABLE)).not.toBeInTheDocument(); // Initially not available
+  });
+
+  it("checks a custom room code with the code endpoint", async () => {
+    vi.mocked(fetch).mockReset().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, available: false }),
+    } as Response);
+
+    render(<Dashboard />);
+    fireEvent.change(screen.getByLabelText("Custom Room Code (optional)"), {
+      target: { value: "Team-Alpha" },
+    });
+
+    expect(await screen.findByText(COPY.ROOM.CODE_UNAVAILABLE)).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("/api/rooms/check-code/team-alpha", {
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("uses AvailabilityHint component for consistent styling", async () => {

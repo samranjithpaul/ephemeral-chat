@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { Shield, UserCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,15 @@ export default function Login() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
 
+  const inviteCode = new URLSearchParams(window.location.search).get("room")?.trim().toLowerCase();
+  const inviteRoom = inviteCode && /^[a-z0-9-]{2,20}$/.test(inviteCode) ? `/room/${inviteCode}` : null;
+
+  useEffect(() => {
+    if (inviteRoom && sessionStorage.getItem("userId") && sessionStorage.getItem("username")) {
+      setLocation(inviteRoom, { replace: true });
+    }
+  }, [inviteRoom, setLocation]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -30,7 +39,7 @@ export default function Login() {
       return;
     }
 
-    if (username.length < 2 || username.length > 20) {
+    if (username.trim().length < 2 || username.trim().length > 20) {
       toast({
         title: "Invalid username",
         description: "Username must be between 2 and 20 characters",
@@ -53,31 +62,10 @@ export default function Login() {
       const data = await response.json();
 
       if (data.success) {
-        // Clear ALL old session data first (fresh start - no room redirects)
-        sessionStorage.clear();
-        localStorage.clear(); // Also clear localStorage to remove any room references
-        
-        // Explicitly remove roomId if it exists
-        localStorage.removeItem('roomId');
-        sessionStorage.removeItem('roomId');
-        
-        // Clear URL parameters to prevent redirect to old rooms
-        window.history.replaceState({}, "", window.location.pathname);
-        
-        // Set new session data FIRST (before any socket operations)
         sessionStorage.setItem("userId", data.userId);
         sessionStorage.setItem("username", data.username);
-        
-        console.log("[SOCKET SYNC] Login successful - userId set in sessionStorage", { userId: data.userId, username: data.username });
-        
-        // Do NOT disconnect socket during login - socket will automatically update userId via heartbeat
-        // Socket is already connected and will pick up new userId on next heartbeat
-        // Only disconnect on explicit logout, not on login
-        
         soundManager.playJoin();
-        
-        // Always redirect to dashboard (never auto-redirect to old rooms)
-        setLocation("/dashboard");
+        setLocation(inviteRoom ?? "/dashboard", { replace: true });
       } else {
         toast({
           title: "Login failed",

@@ -1,15 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import Login from "../login";
 import { COPY } from "@/lib/copy";
 
-// Mock wouter
-vi.mock("wouter", () => ({
-  useLocation: () => {
-    const setLocation = vi.fn();
-    return ["/", setLocation];
-  },
-}));
+const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
+vi.mock("wouter", () => ({ useLocation: () => ["/", navigate] }));
 
 // Mock the socket and sound manager
 vi.mock("@/lib/socket", () => ({
@@ -44,6 +39,7 @@ vi.mock("@/hooks/use-toast", () => ({
 
 describe("Login Page", () => {
   beforeEach(() => {
+    navigate.mockReset();
     // Mock sessionStorage
     Object.defineProperty(window, "sessionStorage", {
       value: {
@@ -54,6 +50,25 @@ describe("Login Page", () => {
       },
       writable: true,
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("keeps a shared room through sign-in", async () => {
+    window.history.replaceState({}, "", "/?room=TEAM-ALPHA");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      json: async () => ({ success: true, userId: "session", username: "Guest" }),
+    }));
+
+    render(<Login />);
+    fireEvent.change(screen.getByLabelText(COPY.LOGIN.USERNAME_LABEL), { target: { value: "Guest" } });
+    fireEvent.click(screen.getByRole("button", { name: COPY.LOGIN.BUTTON_TEXT }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/room/team-alpha", { replace: true }));
+    expect(sessionStorage.setItem).toHaveBeenCalledWith("userId", "session");
   });
 
   it("renders login page with correct title and subtitle", () => {

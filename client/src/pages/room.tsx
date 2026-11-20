@@ -114,11 +114,11 @@ function AudioPlayer({ src, isOwn }: { src: string; isOwn: boolean }) {
 
 export default function RoomPage() {
   const [, params] = useRoute("/room/:id");
-  const roomId = params?.id || "";
+  const roomId = params?.id?.toLowerCase() || "";
   
   const [, setLocation] = useLocation();
-  const [username, setUsername] = useState("");
-  const [userId, setUserId] = useState("");
+  const username = sessionStorage.getItem("username") ?? "";
+  const userId = sessionStorage.getItem("userId") ?? "";
   const [inputMessage, setInputMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -127,251 +127,57 @@ export default function RoomPage() {
   const [showMobileUsers, setShowMobileUsers] = useState(false);
   // Removed countdown timer - messages persist until room is empty
   const [roomError, setRoomError] = useState<string | null>(null);
-  const [isJoining, setIsJoining] = useState(false);
+  const [retry, setRetry] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const hasJoinedRef = useRef(false);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordingActive = useRef(false);
   const { toast } = useToast();
 
-  const { socket, isConnected, isJoined, joinRoom, leaveRoom, sendMessage, sendAudioBase64, currentRoom, messages, setMessages, typingUsers, setTyping } = useSocket();
+  const { socket, isConnected, joinedRoomId, joinRoom, leaveRoom, sendMessage, sendAudioBase64, currentRoom, messages, typingUsers, setTyping } = useSocket();
+  const isJoined = joinedRoomId === roomId;
+  const isJoining = !isJoined && !roomError;
 
   useEffect(() => {
-    const storedUsername = sessionStorage.getItem("username");
-    const storedUserId = sessionStorage.getItem("userId");
-    
-    // If not logged in, redirect to login immediately (don't preserve room ID in URL)
-    if (!storedUsername || !storedUserId) {
-      // Clear any room reference from URL to prevent redirect loops
-      window.history.replaceState({}, "", "/");
-      setLocation("/");
-      return;
+    if (!/^[a-z0-9-]{2,20}$/.test(roomId)) {
+      setRoomError("Invalid room code.");
+    } else if (!userId || !username) {
+      setLocation(`/?room=${roomId}`, { replace: true });
     }
-    
-    setUsername(storedUsername);
-    setUserId(storedUserId);
-    
-    // CRITICAL: Set roomId in sessionStorage when entering room page (before join attempt)
-    // This ensures socket auto-join works and heartbeat_bound handler can find the roomId
-    if (roomId) {
-      sessionStorage.setItem("roomId", roomId);
-      console.log(`[ROOM] Set roomId in sessionStorage: ${roomId}`);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId]); // setLocation is stable from wouter, no need in deps
+    return () => {
+      if (userId) leaveRoom(roomId, userId);
+    };
+  }, [roomId, userId, username, leaveRoom, setLocation]);
 
-  // Memoize verifyAndJoinRoom to prevent recreation on every render
-  const verifyAndJoinRoomRef = useRef<(() => Promise<void>) | null>(null);
-  
   useEffect(() => {
-    // Verify room exists and join when connected
-    const verifyAndJoinRoom = async () => {
-      console.log(`[ROOM] verifyAndJoinRoom called: userId=${userId} roomId=${roomId} hasJoinedRef=${hasJoinedRef.current} isJoining=${isJoining}`);
-      
-      if (!userId || !roomId || hasJoinedRef.current || isJoining) {
-        console.log(`[ROOM] verifyAndJoinRoom skipped: userId=${!!userId} roomId=${!!roomId} hasJoinedRef=${hasJoinedRef.current} isJoining=${isJoining}`);
+    if (!userId || !/^[a-z0-9-]{2,20}$/.test(roomId) || !socket) return;
+    let cancelled = false;
+    setRoomError(null);
+
+    if (!isConnected) {
+      socket.connect();
+      const timeout = setTimeout(() => setRoomError("Cannot connect to chat. Try again."), 10000);
+      return () => clearTimeout(timeout);
+    }
+
+    void joinRoom(roomId, userId).then(result => {
+      if (cancelled || result.ok) return;
+      if (result.reason === "user_not_found") {
+        sessionStorage.removeItem("userId");
+        sessionStorage.removeItem("username");
+        toast({ title: "Session expired", description: "Enter your username to rejoin the room." });
+        setLocation(`/?room=${roomId}`, { replace: true });
         return;
       }
 
-      console.log(`[ROOM] Starting verifyAndJoinRoom process`);
-      setIsJoining(true);
-      setRoomError(null);
-
-      try {
-        // First verify room exists via API
-        const serverUrl = import.meta.env.DEV ? "http://localhost:8080" : window.location.origin;
-        const response = await fetch(`${serverUrl}/api/rooms/${roomId}`);
-        const data = await response.json();
-
-        if (!data.success || !data.room) {
-          setRoomError("Room not found");
-          setIsJoining(false);
-          // Clear URL immediately to prevent re-trying or showing error multiple times
-          window.history.replaceState({}, "", "/dashboard");
-          
-          toast({
-            variant: "destructive",
-            title: "Room not found",
-            description: "The room has been deleted or doesn't exist.",
-          });
-          
-          // Redirect immediately (don't wait)
-          setLocation("/dashboard");
-          return;
-        }
-
-        // CRITICAL: Wait for socket connection using actual socket state, not just isConnected
-        let connected = socket?.connected || false;
-        if (!connected && socket) {
-          // Wait up to 10 seconds for connection
-          let attempts = 0;
-          while (!connected && attempts < 20) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            // Check connection status from socket directly
-            if (socket.connected) {
-              connected = true;
-              break;
-            }
-            attempts++;
-          }
-        }
-
-        // CRITICAL: Use socket.connected as source of truth
-        if ((connected || socket?.connected) && socket) {
-          console.log(`[ROOM] ✅ Calling joinRoom roomId=${roomId} userId=${userId} socket.connected=${socket.connected} socket.id=${socket.id}`);
-          hasJoinedRef.current = true; // Prevent duplicate joins
-          
-          // CRITICAL: Ensure roomId is in sessionStorage before calling joinRoom
-          sessionStorage.setItem("roomId", roomId);
-          sessionStorage.setItem("userId", userId);
-          
-          joinRoom(roomId, userId);
-          // Note: isJoined will be set to true by room_joined event handler
-        } else {
-          console.error(`[ROOM] ❌ Connection check failed: connected=${connected} socket.connected=${socket?.connected} socket=${!!socket}`);
-          setRoomError("Connection failed");
-          setIsJoining(false);
-          hasJoinedRef.current = false;
-          toast({
-            variant: "destructive",
-            title: "Connection error",
-            description: "Unable to connect to the server. Please try again.",
-          });
-        }
-      } catch (error) {
-        console.error("Room join error:", error);
-        setRoomError("Failed to join room");
-        setIsJoining(false);
-        hasJoinedRef.current = false;
-        
-        // Clear URL to prevent retries
-        window.history.replaceState({}, "", "/dashboard");
-        
-        toast({
-          variant: "destructive",
-          title: "Connection error",
-          description: "Unable to connect to the room. Redirecting to dashboard...",
-        });
-        
-        // Redirect to dashboard on error
-        setTimeout(() => {
-          setLocation("/dashboard");
-        }, 1500);
-      }
-    };
-    
-    // Store ref to verifyAndJoinRoom so it can be called from other effects
-    verifyAndJoinRoomRef.current = verifyAndJoinRoom;
-
-    // CRITICAL: If socket exists but not connected, try to connect it
-    if (userId && roomId && socket && !socket.connected) {
-      console.log(`[ROOM] Socket exists but not connected - manually connecting socket.id=${socket.id}`);
-      socket.connect();
-      return; // Wait for connection before proceeding
-    }
-    
-    // CRITICAL: Wait for socket to exist before trying to join
-    if (!socket) {
-      console.log(`[ROOM] Socket not initialized yet - waiting... userId=${userId} roomId=${roomId}`);
-      return; // Wait for socket initialization
-    }
-    
-    // CRITICAL: Check socket.connected directly, not just isConnected state
-    // Also check that socket exists and we haven't already joined
-    if (userId && roomId) {
-      if (socket && socket.connected && !isJoined && !isJoining && !hasJoinedRef.current) {
-        console.log(`[ROOM] ✅ Conditions met for join: userId=${userId} roomId=${roomId} socket.connected=${socket.connected} isJoined=${isJoined} isJoining=${isJoining} hasJoinedRef=${hasJoinedRef.current}`);
-        verifyAndJoinRoom();
-      } else {
-        // Log why join is not being triggered (detailed debug)
-        console.log(`[ROOM] ⚠️ Join conditions not met: userId=${userId} roomId=${roomId} socket=${!!socket} socket.connected=${socket?.connected} isConnected=${isConnected} isJoined=${isJoined} isJoining=${isJoining} hasJoinedRef=${hasJoinedRef.current}`);
-        
-        // If socket is connected but we haven't joined and aren't joining, try to trigger join
-        // This handles the case where verifyAndJoinRoom wasn't called
-        if (socket && socket.connected && !isJoined && !isJoining && !hasJoinedRef.current) {
-          console.log(`[ROOM] 🔄 Attempting to trigger verifyAndJoinRoom (fallback)`);
-          verifyAndJoinRoom();
-        }
-      }
-    } else {
-      console.log(`[ROOM] ⚠️ Missing userId or roomId: userId=${userId} roomId=${roomId}`);
-    }
-  }, [socket, isConnected, userId, roomId, isJoined, isJoining, joinRoom, setLocation, toast]);
-
-  // Clear messages immediately when roomId changes to prevent old chat from flashing
-  useEffect(() => {
-    if (roomId) {
-      console.log(`[CLIENT] Chat cleared when switching room roomId=${roomId}`);
-      setMessages([]);
-    }
-    // Cleanup on unmount
-    return () => {
-      if (roomId) {
-        setMessages([]);
-      }
-    };
-  }, [roomId, setMessages]);
-
-  // Reset join state when roomId changes
-  useEffect(() => {
-    setRoomError(null);
-    setIsJoining(false);
-    hasJoinedRef.current = false; // Reset join flag when room changes
-    shouldAutoScrollRef.current = true; // Reset scroll behavior on room change
-    console.log(`[ROOM] Room ID changed to ${roomId}, resetting join state`);
-    
-    // CRITICAL: If socket is already connected when roomId changes, trigger join immediately
-    // This handles the case where user navigates to a new room while socket is connected
-    if (roomId && userId && socket && socket.connected && !isJoined && !isJoining) {
-      console.log(`[ROOM] Socket already connected on room change - triggering join immediately roomId=${roomId}`);
-      setTimeout(() => {
-        if (socket && socket.connected && !hasJoinedRef.current && !isJoined && verifyAndJoinRoomRef.current) {
-          verifyAndJoinRoomRef.current();
-        }
-      }, 300); // Small delay to let state reset
-    }
-  }, [roomId]);
-  
-  // CRITICAL: Reset hasJoinedRef when isJoined becomes true (successful join)
-  useEffect(() => {
-    if (isJoined) {
-      console.log(`[ROOM] isJoined=true, ensuring hasJoinedRef is set`);
-      hasJoinedRef.current = true;
-    }
-  }, [isJoined]);
-
-  // Log when both users have joined successfully (for random chat debugging)
-  useEffect(() => {
-    if (isJoined && currentRoom && currentRoom.maxUsers === 2 && currentRoom.users && currentRoom.users.length === 2) {
-      if (import.meta.env.DEV) {
-        console.log(`[RANDOM_CHAT] ✅ Both users have joined successfully roomId=${roomId} users=[${currentRoom.users.join(', ')}]`);
-        console.log(`[RANDOM_CHAT] Room is ready for chat - both sides are connected`);
-      }
-    }
-  }, [isJoined, currentRoom, roomId]);
-  
-  // CRITICAL: Additional fallback - if socket connects while on room page, trigger join
-  useEffect(() => {
-    if (socket && socket.connected && userId && roomId && !isJoined && !isJoining && !hasJoinedRef.current) {
-      console.log(`[ROOM] Fallback: Socket connected while on room page - triggering join roomId=${roomId} userId=${userId}`);
-      setTimeout(() => {
-        if (socket && socket.connected && !hasJoinedRef.current && !isJoined && verifyAndJoinRoomRef.current) {
-          verifyAndJoinRoomRef.current();
-        }
-      }, 500);
-    }
-  }, [socket?.connected, userId, roomId, isJoined, isJoining]); // Watch socket.connected specifically
-
-  // Removed countdown timer - messages persist until room is empty
-
-  // CRITICAL: When room_joined event sets isJoined=true, immediately hide "Joining room..." UI
-  // This prevents flicker and ensures UI activates instantly when join confirmation arrives
-  useEffect(() => {
-    if (isJoined && isJoining) {
-      console.log(`[ROOM UI] room_joined confirmed - hiding 'Joining room...' UI immediately`);
-      setIsJoining(false);
-    }
-  }, [isJoined, isJoining]);
+      const errors: Record<string, string> = {
+        room_not_found: "This room does not exist or has expired.",
+        room_full: "This room is full.",
+      };
+      setRoomError(errors[result.reason] ?? "Could not join the room. Try again.");
+    });
+    return () => { cancelled = true; };
+  }, [roomId, userId, socket, isConnected, joinRoom, retry, setLocation, toast]);
 
   // CRITICAL: Auto-scroll to bottom when new messages arrive or when user sends message
   // Use scrollIntoView with instant behavior for immediate response
@@ -426,91 +232,18 @@ export default function RoomPage() {
   }, []);
 
   useEffect(() => {
-    // Leave room on unmount and clear all room data
-    return () => {
-      if (userId && roomId && isJoined) {
-        leaveRoom(roomId, userId);
-      }
-      // Clear any room references from storage to prevent redirects
-      sessionStorage.removeItem("lastRoomId");
-      localStorage.removeItem("lastRoomId");
+    const handleRoomClosed = (event: Event) => {
+      if ((event as CustomEvent).detail?.roomId !== roomId) return;
+      toast({ title: "Room closed", description: "The other user left the chat." });
+      setLocation("/dashboard", { replace: true });
     };
-  }, [userId, roomId, isJoined, leaveRoom]);
-  
-  // Listen for user left and room closed events to show toast notifications
-  useEffect(() => {
-    const handleUserLeft = (event: CustomEvent) => {
-      console.log(`[TOAST] User left event received`, event.detail);
-      toast({
-        title: "User Left",
-        description: "A user has left the chat.",
-        variant: "default",
-      });
-    };
-    
-    const handleRoomClosed = (event: CustomEvent) => {
-      const { reason } = event.detail || {};
-      console.log(`[TOAST] Room closed event received`, event.detail);
-      
-      // Ensure username and userId are preserved before redirect
-      const username = sessionStorage.getItem("username");
-      const userId = sessionStorage.getItem("userId");
-      if (!username || !userId) {
-        console.warn(`[ROOM_CLEANUP] Missing session data - username=${!!username} userId=${!!userId}`);
-      }
-      
-      toast({
-        title: "Room Closed",
-        description: reason === "not_enough_users" 
-          ? "The other user left. This room will be closed and you'll be redirected to the dashboard."
-          : "This room has been closed.",
-        variant: "destructive",
-        duration: 2000,
-      });
-      
-      // Redirect to dashboard after toast (using setLocation to preserve session)
-      setTimeout(() => {
-        console.log(`[ROOM_CLEANUP] Redirecting to dashboard from room page`);
-        setLocation("/dashboard");
-      }, 2000);
-    };
-    
-    const handleSystemMessage = (event: CustomEvent) => {
-      const { type, message, username } = event.detail || {};
-      if (type === "user_left") {
-        // Show toast when user leaves
-        toast({
-          title: "User Left",
-          description: message || `${username || "User"} left the room.`,
-          variant: "default",
-        });
-        console.log(`[TOAST] User left - ${username || "User"}`);
-      } else if (type === "room_deleted") {
-        // Show toast when room is deleted
-        toast({
-          title: "Room Closed",
-          description: message || "The room has been closed.",
-          variant: "destructive",
-          duration: 2000,
-        });
-        console.log(`[TOAST] Room deleted - ${message}`);
-      }
-    };
-    
-    window.addEventListener("user-left", handleUserLeft as EventListener);
-    window.addEventListener("room-closed", handleRoomClosed as EventListener);
-    window.addEventListener("system-message", handleSystemMessage as EventListener);
-    
-    return () => {
-      window.removeEventListener("user-left", handleUserLeft as EventListener);
-      window.removeEventListener("room-closed", handleRoomClosed as EventListener);
-      window.removeEventListener("system-message", handleSystemMessage as EventListener);
-    };
-  }, [toast]);
+    window.addEventListener("room-closed", handleRoomClosed);
+    return () => window.removeEventListener("room-closed", handleRoomClosed);
+  }, [roomId, setLocation, toast]);
 
   const handleSendMessage = async () => {
     const messageText = inputMessage.trim();
-    if (!messageText || isSending || !(socket?.connected)) return;
+    if (!messageText || isSending || !isJoined) return;
 
     setIsSending(true);
     soundManager.playMessageSent();
@@ -547,41 +280,62 @@ export default function RoomPage() {
     }
   };
 
-  // Audio recording handlers
+  useEffect(() => {
+    recordingActive.current = true;
+    return () => {
+      recordingActive.current = false;
+      mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+    };
+  }, [roomId]);
+
   const startRecording = async () => {
+    let stream: MediaStream | undefined;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!recordingActive.current || mediaStreamRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      const recordingStream = stream;
+      mediaRecorderRef.current = recorder;
+      mediaStreamRef.current = stream;
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) chunks.push(event.data);
       };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      recorder.onstop = () => {
+        recordingStream.getTracks().forEach(track => track.stop());
+        if (mediaStreamRef.current !== recordingStream) return;
+        mediaStreamRef.current = null;
+        if (!recordingActive.current || !chunks.length) return;
+        const audioBlob = new Blob(chunks, { type: recorder.mimeType || chunks[0].type });
+        if (audioBlob.size > 5 * 1024 * 1024) {
+          toast({ title: "Voice message is too large", description: "Record a shorter message.", variant: "destructive" });
+          return;
+        }
         const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64Audio = reader.result as string;
-          sendAudioBase64(base64Audio);
+        reader.onload = () => {
+          if (!recordingActive.current || mediaRecorderRef.current !== recorder || typeof reader.result !== "string") return;
+          try {
+            sendAudioBase64(reader.result);
+          } catch {
+            toast({ title: "Could not send voice message", variant: "destructive" });
+          }
         };
         reader.readAsDataURL(audioBlob);
-        stream.getTracks().forEach(track => track.stop());
       };
 
-      mediaRecorder.start();
+      recorder.start();
       setIsRecording(true);
       soundManager.playClick();
-    } catch (error: any) {
-      console.error("Failed to start recording:", error);
-      toast({
-        variant: "destructive",
-        title: "Recording failed",
-        description: "Could not access microphone. Please check permissions.",
-      });
+    } catch {
+      stream?.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+      toast({ title: "Recording failed", description: "Check microphone permissions.", variant: "destructive" });
     }
   };
 
@@ -595,23 +349,28 @@ export default function RoomPage() {
 
   const handleLeaveRoom = () => {
     soundManager.playLeave();
-    if (userId && roomId) {
-      leaveRoom(roomId, userId);
-    }
     setLocation("/dashboard");
   };
 
-  // NEW: Copy Room Code button - enhanced with share option
-  const copyRoomCode = () => {
-    // Copy just the room ID, not the full URL
-    navigator.clipboard.writeText(roomId);
-    setCopied(true);
-    soundManager.playClick();
-    toast({
-      title: "Room code copied!",
-      description: `Room code "${roomId}" copied to clipboard. Share it with others so they can join this room.`,
-    });
-    setTimeout(() => setCopied(false), 2000);
+  const copyRoomCode = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setCopied(true);
+      soundManager.playClick();
+      toast({ title: "Room code copied", description: roomId });
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({ title: "Could not copy room code", description: roomId, variant: "destructive" });
+    }
+  };
+
+  const copyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/room/${roomId}`);
+      toast({ title: "Invite link copied" });
+    } catch {
+      toast({ title: "Could not copy invite link", description: window.location.href, variant: "destructive" });
+    }
   };
 
   // Removed formatTime - no longer needed without countdown timer
@@ -664,7 +423,7 @@ export default function RoomPage() {
                   <div className="w-1 h-1 sm:w-1.5 sm:h-1.5 bg-yellow-500 rounded-full animate-pulse" />
                   <span className="hidden sm:inline">Connecting...</span>
                 </Badge>
-              ) : socket.io && socket.io._reconnecting ? (
+              ) : socket.active ? (
                 <Badge variant="destructive" className="gap-1 sm:gap-1.5 animate-pulse text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5">
                   <div className="w-1 h-1 sm:w-1.5 sm:h-1.5 bg-destructive rounded-full animate-pulse" />
                   <span className="hidden sm:inline">Reconnecting...</span>
@@ -773,6 +532,9 @@ export default function RoomPage() {
               </SheetContent>
             </Sheet>
             <ThemeToggle />
+            <Button variant="outline" size="sm" onClick={copyInvite} className="h-7 sm:h-8">
+              Copy invite
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -795,6 +557,7 @@ export default function RoomPage() {
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
             {roomError}
+            <Button variant="ghost" onClick={() => setRetry(value => value + 1)}>Try again</Button>
           </AlertDescription>
         </Alert>
       )}
@@ -807,26 +570,11 @@ export default function RoomPage() {
         >
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
-            Joining room...
+            {isConnected ? "Joining room…" : "Connecting to chat…"}
           </AlertDescription>
         </Alert>
       )}
       
-      {/* Connection Status (only show if not connected AND have joined before) */}
-      {socket && !socket.connected && isJoined && !isJoining && !roomError && (
-        <Alert 
-          variant="default" 
-          className="rounded-none border-x-0 border-t-0 border-yellow-500/50 bg-yellow-50 dark:bg-yellow-950"
-        >
-          <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
-          <AlertDescription className="text-yellow-800 dark:text-yellow-200">
-            {socket.io && socket.io._reconnecting
-              ? "Connection lost — reconnecting..." 
-              : "Disconnected"}
-          </AlertDescription>
-        </Alert>
-      )}
-
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Messages Area */}
@@ -923,6 +671,9 @@ export default function RoomPage() {
                               <span>{formatMessageTime(message.timestamp)}</span>
                               {isOwn && (
                                 <div className="flex items-center gap-0.5">
+                                  {message.status === "failed" && (
+                                    <span className="text-xs" title="This message could not be confirmed">Send failed</span>
+                                  )}
                                   {message.status === "sending" && (
                                     <Check className="w-3 h-3 opacity-50" />
                                   )}
@@ -984,7 +735,7 @@ export default function RoomPage() {
                   type="button"
                   size="icon"
                   className={`shrink-0 rounded-full h-10 w-10 sm:h-12 sm:w-12 ${isRecording ? "bg-red-500 hover:bg-red-600 text-white" : ""}`}
-                  disabled={!(socket?.connected) || !isJoined}
+                  disabled={!isRecording && (!socket?.connected || !isJoined)}
                   onClick={isRecording ? stopRecording : startRecording}
                   title={isRecording ? "Click to stop recording" : "Click to record audio"}
                 >
